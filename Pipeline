@@ -1,0 +1,2261 @@
+
+%OBS! To set-up the code to running.. only on the first time, follow these steps (source:  labbook)
+% 1. open terminal window and type: 
+%       gedit .bashrc
+% 2. copy the following line to the beginning of the file, save and close the window: 
+%       source /usr/local/common/meeg-cfin/configurations/setup_environment.sh
+% 3. in same terminal window, type: 
+%       gedit .bash_profile
+% 4. copy following 3 lines into the file, save and close window:
+%       if [ -f $HOME/.bashrc ]; then
+%           source $HOME/.bashrc
+%       fi
+
+%OBS! before running the code below you need to close matlab, open the terminal and write: 'use anaconda', then open matlab and run the code
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%% SECTION 1 -- DTI data PREPROCESSING
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% PIPELINE OF ALL SUBJECTS - DTI - FSL %%
+
+
+%Relavant SCRIPTS at: 
+'/projects/MINDLAB2021_MEG-TempSeqAges/scripts/Nikita/Ageing_conn_scripts';
+path_out='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/'; %set the path to the folder where you will save your converted data
+
+
+%% INITIAL CONVERSION FROM DICOM (RAW) FILE TO NIFTI (dcm2nii) - fast
+
+path='/projects/MINDLAB2023_MEG-AuditMemDement/raw'; %path to the folder containing all the raw data
+%mkdir('/scratch7/MINDLAB2022_MEG-EncodingMusicSeq/Nikita/DTI/') %creates the directory for storign analysis results
+path1=dir([path '/0*']); %query the content of the folder "raw": it contains one folder for each subject
+for ii=1:length(path1) %loop across all subjects
+    path2=dir([path1(ii).folder '/' path1(ii).name '/20*']); %for each subject, search folders named '2018*'. There should be 1 or 2 folders per participant: one contains the folder 'MR' and 'SR' the other one contains the folder 'MEG'. We need the folder 'MR'.
+    outdir = [path_out path1(ii).name];
+    if ~exist(outdir,'dir')
+        mkdir(path_out, path1(ii).name);  %for each subject (ii), create a new folder in (DTI_Portis) and call it with the same name as the subject's (path1(ii).name)
+    end
+    for dd=1:length(path2)
+        path3=dir([path2(dd).folder '/' path2(dd).name '/MR/*AP']); %choose 'MR' rather than 'SR' - AP
+        if length(path3) > 1
+            warning(['Subj ' path1(ii).name ' has more than 1 DTI AP'])
+        end
+        path4=dir([path2(dd).folder '/' path2(dd).name '/MR/*PA']); %choose 'MR' rather than 'SR' - PA
+        if length(path4) > 1
+            warning(['Subj ' path1(ii).name ' has more than 1 DTI PA'])
+        end
+        if ~isempty(path3)
+            pathAP=[path3.folder '/' path3.name '/files']; %set path to diff data (AP)
+            %Convert AP to .nii.gz
+            cmd = ['dcm2nii -o ' path_out path1(ii).name ' ' pathAP]; %local
+            system(cmd) %send command to the cluster
+        end
+        if ~isempty(path4)
+            pathPA=[path4.folder '/' path4.name '/files'];%set path to PA
+            %Convert PA
+            cmd = ['dcm2nii -o ' path_out path1(ii).name ' ' pathPA];
+            system(cmd)
+        end
+    end
+    disp(ii)
+end
+
+
+%% Getting ready for TOPUP
+
+cd(path_out);
+
+% 1) NODIF (fslroi) - fast
+%creating reference volume (nodif) based on the first image of the DTI data 
+path5=dir([path_out '0*']);
+for gg=1:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder (specify 20* to avoid hidden files)
+    if ~isempty(path6)
+        cd([path5(gg).folder '/' path5(gg).name]); %change directory for each subject, so that nodif is saved in that of the corresponding subject
+        cmd = ['fslroi ' path6(1).folder '/' path6(3).name ' nodif 0 1']; %apply fslroi to AP, which is the 3rd file in the folder
+        system(cmd)
+        disp(gg)
+    end
+end 
+
+%fslroi command
+%input DTI data (AP)
+%output name of the reference volume (nodif)
+%0 (minimum index of the volumes within the nifti file (indexing as in python=starting from 0))
+%1 (number of images to be taken (in this case only first))
+
+
+%%
+% 2) NODIF_PA (copyfile) - fast
+%renaming PA as follows: 
+%1)copy the DTI PA file (20180123_102505cmrrmbep2ddiffmultidirPASubjectNo0001s023a1001.nii.gz)
+%2)rename it as "nodif_PA.nii.gz" 
+for gg=1:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        cd([path5(gg).folder '/' path5(gg).name]); %change directory for each subject, so that a nodif_PA.nii.gz is created for each subject
+        copyfile([path6(4).folder '/' path6(4).name],[path6(4).folder '/nodif_PA.nii.gz']); %copy PA (4th file in the folder) and rename it 
+        disp(gg)
+    end
+end
+%%
+% 3) AP_PA_b0 (fslmerge) - fast
+%merging AP with PA data with the reference volume (nodif) 
+for mm=1:length(path5)
+    path6=dir([path5(mm).folder '/' path5(mm).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        cd([path5(mm).folder '/' path5(mm).name]); %change directory for each subject, so that a nodif_PA.nii.gz is created for each subject  
+        cmd = ['fslmerge -t ' path6(4).folder '/AP_PA_b0 nodif nodif_PA'];
+        system(cmd)
+        disp(mm)
+    end
+end
+%fslmerge command
+%-t (parameter of fslmerge)
+%output name (AP_PA_b0)
+%reference AP (nodif)
+%reference PA (nodif_PA)
+
+%% Creating acquisition parameters file (acqparams.txt) - To be run ONLY for the FIRST SUBJECT!!! - fast
+%txt file with information about acquisition parameters (the same for all subjects)
+%In this case: 2x4 matrix 
+%row 1: 0 -1 (meaning AP) 0 (from the beginning of time) 0.104 (echo time in seconds (104ms))
+%!!!!!! NEED TO FIX WHERE THE FILE IS BEING CREATED AND CLEAR THE FIRST
+%LINE OF THE CREATED MATRIX, IT SHOULD ONLY BE NUMBERS WITH SPACES
+
+cd(path_out);
+matrixacqpar = [0 -1 0 0.065; 0 1 0 0.065]; %creating double matrix with values
+dlmwrite('acqparams.txt', matrixacqpar,'delimiter',' ')
+%t = table(matrixacqpar); %converting matrix to table
+%writetable(t,'acqparams.txt') %saving table as .txt file (acqparams.txt MUST be the name)
+
+%% Copying acqparams.txt to each subject's folder - To be run for ALL THE OTHER SUBJECTS
+
+path_acqparams='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/acqparams.txt';
+%set the path to the folder where you will save your converted data
+path5=dir([path_out '0*']);
+for gg=99:length(path5) 
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %here it is just to check for empty folders and not add anything to them
+    if ~isempty(path6)
+        copyfile(path_acqparams,[path5(gg).folder '/' path5(gg).name '/acqparams.txt']); %copy acqparams.txt from DTI001 in every subject's folder  
+        disp(gg)
+    end
+end
+
+%% Call to TOPUP command (topup) - quite fast
+
+%set the path to the folder where you will save your converted data
+path5=dir([path_out '0*']);
+for gg=99:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    %cmd = 'topup --imain=AP_PA_b0 --datain=acqparams.txt --config=b02b0.cnf --out=topup_AP_PA_b0 --iout=topup_AP_PA_bo_iout --fout=topup_AP_PA_bo_fout'; %apply topup to every subject
+    if ~isempty(path6)
+        cmd = ['submit_to_cluster -q all.q -n 1 -p MINDLAB2023_MEG-AuditMemDement "/usr/local/fsl/bin/topup --imain=' path6(1).folder '/AP_PA_b0 --datain=' path6(1).folder '/acqparams.txt --config=b02b0.cnf --out=' path6(1).folder '/topup_AP_PA_b0 --iout=' path6(1).folder '/topup_AP_PA_b0_iout --fout=' path6(1).folder '/topup_AP_PA_b0_fout"']; %apply topup to every subject    
+        system(cmd)
+        disp(gg)
+    end
+end
+%cmd = 'topup --imain=AP_PA_b0 --datain=acqparams.txt --config=b02b0.cnf --out=topup_AP_PA_b0 --iout=topup_AP_PA_bo_iout --fout=topup_AP_PA_bo_fout';
+%topup command
+%DTI data after fslmerg (--imain=AP_PA_b0)
+%acquisition parameters (--datain=acqparams.txt)
+%configuration file specifying command line arguments (--datain=acqparams.txt); this file is already in the FSL directory and it contains some (default) specifications
+%output file (--out=topup_AP_PA_b0)
+%output file with unwarped images (--iout=topup_AP_PA_bo_iout)
+%output file with field (Hz) (--fout=topup_AP_PA_bo_fout)
+%% Generating a brain mask from the corrected b0 (fslmaths, bet) - fast
+path5=dir([path_out '0*']);
+
+for gg=2:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        cd([path5(gg).folder '/' path5(gg).name]); %change directory for each subject, so that a nodif_PA.nii.gz is created for each subject   
+        cmd = 'fslmaths topup_AP_PA_b0_iout.nii.gz -Tmean hifi_nodif'; %apply fslmaths to create a mask from the corrected b0   
+        system(cmd)
+        disp(gg)
+    end
+end
+% cmd = 'fslmaths topup_AP_PA_b0_iout.nii.gz -Tmean hifi_nodif';
+%fslmaths command
+%input (topup_AP_PA_b0_iout.nii.gz)
+%specification -Tmean
+%output (hifi_nodif)
+% system(cmd)
+%%
+%extracting the brain from b0 - fast
+for gg=1:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        cd([path5(gg).folder '/' path5(gg).name]); %change directory for each subject, so that a nodif_PA.nii.gz is created for each subject
+        cmd = 'bet hifi_nodif hifi_nodif_brain -m -f 0.2'; %apply BET to extract the brain from b0   
+        system(cmd)
+        disp(gg)
+    end
+end
+% cmd = 'bet hifi_nodif hifi_nodif_brain -m -f 0.2';
+%bet command
+%input brain mask (hifi_nodif)
+%output (hifi_nodif_brain)
+%parameters (-m -f 0.2); -f means "fraction intensity threshold"
+% system(cmd)
+
+
+%% New automatized way of creating index files
+
+raw_path='/projects/MINDLAB2023_MEG-AuditMemDement/raw'; %path to the folder containing all the raw data
+%mkdir('/scratch7/MINDLAB2022_MEG-EncodingMusicSeq/Nikita/DTI/') %creates the directory for storign analysis results
+path1=dir([raw_path '/0*']); %query the content of the folder "raw": it contains one folder for each subject
+for ii=1:length(path1) %loop across all subjects
+    path2=dir([path1(ii).folder '/' path1(ii).name '/20*']); %for each subject, search folders named '2018*'. There should be 1 or 2 folders per participant: one contains the folder 'MR' and 'SR' the other one contains the folder 'MEG'. We need the folder 'MR'.
+    for dd=1:length(path2)
+        path3=dir([path2(dd).folder '/' path2(dd).name '/MR/*AP/files/PRO*']); %choose 'MR' rather than 'SR' - AP
+        if ~isempty(path3)
+            thispath = dir([path_out '/' path1(ii).name]);
+            path_string = thispath(1).folder;
+            volume_count = length(path3);
+            ind = ones(volume_count,1);
+            dlmwrite([path_string '/index.txt'], ind,'delimiter',' ')
+        end
+    end
+end
+
+
+%% Correcting for EDDY currents (eddy) - slow: about 10-15 hours/subject
+%(currents generated in the MRI machine because of a rapid change of the magnetic field direction during the acquisition: echo planar images are acquired rapidly in different orientations)
+
+path5=dir([path_out '0*']);
+
+for gg=1:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        cmd = ['submit_to_cluster -q long.q -n 1 -p MINDLAB2023_MEG-AuditMemDement "/usr/local/fsl/bin/eddy --imain=' path6(3).folder '/' path6(3).name ' --mask=' path6(1).folder '/hifi_nodif_brain_mask --index=' path6(1).folder '/index.txt --acqp=' path6(1).folder '/acqparams.txt --bvecs=' path6(2).folder '/' path6(2).name ' --bvals=' path6(1).folder '/' path6(1).name ' --fwhm=0 --topup=' path6(1).folder '/topup_AP_PA_b0 --flm=quadratic --out=' path6(3).folder '/eddy_unwarped_images"'];
+        system(cmd)
+        disp(gg)
+    end
+end
+% cmd = 'eddy --imain=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.nii.gz --mask=hifi_nodif_brain_mask --index=index.txt --acqp=acqparams.txt --bvecs=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bvec --bvals=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bval --fwhm=0 --topup=topup_AP_PA_b0 --flm=quadratic --out=eddy_unwarped_images';
+%command eddy
+%main input DTI data from initial nifti convertion (--imain=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.nii.gz)
+%mask outputted from BET (hifi_nodif_brain_mask); NOTE that the name of the output that we use is "hifi_nodif_brain_mask" and not "hifi_nodif_brain"
+%file with indices of the volumes (--index=index.txt)
+%acquisition parameters (--acqp=acqparams.txt)
+%bvecs outputted from the initial nifti convertion (--bvecs=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bvec); bvecs indicate the direction of diffusion
+%bvals outputted from the initial nifti convertion (--bvals=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bval); bvals indicate the amount of the diffusion
+%parameter telling that no smoothing should be applied (--fwhm=0)
+%output from TOPUP algorithm (--topup=topup_AP_PA_b0)
+%parameter that assumes a quadratic model for the EC-fields (--flm=quadratic)
+%output name (--out=eddy_unwarped_images)
+% system(cmd)
+
+%% TENSOR FITTING - fast (for later TBSS) Can run for the first subject to look how it looks in FSLeyes
+%fitting the tensor into the DTI data (this is to get fractional anisotropy (FA) to see whether there are microstructural changes or differences between groups, etc. this is usually used in connection with TBSS)
+
+path5=dir([path_out '0*']);
+for gg=1:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        cd([path5(gg).folder '/' path5(gg).name]); %change directory for each subject, so that a nodif_PA.nii.gz is created for each subject
+        cmd = ['dtifit --data=' path6(1).folder '/eddy_unwarped_images.nii.gz --mask=' path6(1).folder '/hifi_nodif_brain_mask.nii.gz --bvecs=' path6(2).folder '/' path6(2).name ' --bvals=' path6(1).folder '/' path6(1).name ' --out=' path6(1).folder '/dti_fitted_tensors'];   
+        system(cmd)
+        disp(gg)
+    end
+end
+% cmd = ['dtifit --data=eddy_unwarped_images.nii.gz --mask=hifi_nodif_brain_mask.nii.gz --bvecs=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bvec --bvals=20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bval --out=dti_fitted_tensors'];
+%dtifit command
+%input data from eddy (--data=eddy_unwarped_images.nii.gz)
+%mask that you got before (--mask=hifi_nodif_brain_mask.nii.gz)
+%bvecs (same as for eddy)
+%bvals (same as for eddy)
+%output file (--out=dti_fitted_tensors)
+% system(cmd)
+%returns several outputs (starting with "dti_fitted_tensors..", NOTE in particular the ones ending with "_V1" "_V2" "_V3" and open them in fsleyes to conduct a further inspection
+
+%% TBSS - Tract-Based Spatial Statistics
+
+%To compare FA values between two groups of subjects
+%ALL the FA files (one per subject) must be in the SAME directory
+
+%Make the directory for TBSS analysis
+path_tbss='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss'; %set the path to the folder where you will save your converted data
+mkdir(path_tbss)
+%%
+path5=dir([path_out '0*']);
+%0) Copy and rename *_FA.nii.gz files from each subject into a new folder, where tbss will be run - fast
+for gg=1:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        path_FA=dir([path5(gg).folder '/' path5(gg).name '/*FA.nii.gz']); %loop across each subject and get the content of each subject's FA file
+        copyfile([path_FA(1).folder '/' path_FA(1).name],[path_tbss '/' path5(gg).name  '_FA.nii.gz']); %copy acqparams.txt from DTI001 in every subject's folder and rename the file
+        disp(gg)
+    end
+end
+
+%% 1) Removing likely outliers by removing brain-edge artefacts and the zero end slices (tbss_1_preproc) - FAST process
+
+% tbss_1_preproc *nii.gz 
+%It creates a new folder called FA, containing the sub-directory "origdata", with the original images
+cd(path_tbss); %set tbss folder as current path
+cmd = ['tbss_1_preproc *nii.gz']; %run tbss preprocessing
+system(cmd)
+% index.html shows the slices of every single subject
+
+%% 2) Non-linear registration: aligning all the FA data across subjects (tbss_2_reg ) - moderately to very SLOW process (see options)
+% tbss_2_reg 
+% It estimates warping parameters to standardize space (later applied in step 3)
+% Two ways to do it:
+% a) align to FSL's "FMRIB58_FA" Template (about 10 min/participant) - RECOMMENDED by FSL guys. Use -T flag
+% b) automatic search for the most representative image to be used as a template across subjects (days/weeks). Use -t flag to choose your own target image
+
+% 2.1) Creating new FMRIB58_FA template with the wanted resolution (flirt)
+% - not necessary
+flag_2mm=0; %Select template resolution: 1=2mm or 0=1mm (WE CHOSE 1mm, as suggested by FSL)
+if flag_2mm~=1
+    varT='T';
+else
+    template_path='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss/template';% path to the templates
+    cmd=['flirt -in ' template_path '/FMRIB58_FA_1mm.nii.gz -ref ' template_path '/FMRIB58_FA_1mm.nii.gz -out ' template_path '/FMRIB58_FA_2mm.nii.gz -applyisoxfm 2']; %convert the 1mm template into a 2mm one (matching the DTI acquisition parameters)
+    system(cmd);
+    varT=['t ' template_path '/FMRIB58_FA_2mm.nii.gz']; %select the desired template by using -t and path to template
+end
+%%
+%2.2)Running non-linear registration (tbss_2_reg)
+cd(path_tbss); %set tbss folder as current path
+cmd=['submit_to_cluster -q short.q -n 1 -p MINDLAB2023_MEG-AuditMemDement "/usr/local/fsl/bin/tbss_2_reg -' varT '"']; %run non-linear registration
+system(cmd);
+
+%% 3) Post-registration: applying the previous registration to take all subjects into 1x1x1mm standard space (tbss_3_postreg) - relatively fast
+%Transforming the original FA image into MNI152 (1x1x1mm) space and merges all of the subjects' images into a single 4D image called "all_FA" (saved in "stats" folder) and calculates the mean of all images (mean_FA), which is used to create the "mean_FA_skeleton"
+
+%OBS! It's always better to VISUALLY INSPECT that the skeleton is well aligned with MNI152 image!! --> FSLview or FSLeyes
+% Options:
+% a) -S : use the mean across all subjects as a skeleton (recommended).
+% b) -T : use the FMRIB58_FA mean FA image and its derived skeleton.
+cd(path_tbss); %set tbss folder as current path
+cmd=['tbss_3_postreg -S'];
+system(cmd);
+%  Check MATLAB command window for info about the status
+%when visualizing the output on fsl, remember to add also the MNI152
+%template and change the colourscale for the skeleton
+
+%% 4) Project the pre-aligned data into the skeleton (tbss_4_prestats)
+
+%Thresholding the mean FA skeleton image at the chosen threshold (0.3).
+% the script takes the "all_FA" image (containing all subjects' aligned FA data) and, for each subject, projects the FA data onto the mean FA skeleton.
+%The output is a binary skeleton mask (4D image) with the projected skeletonised FA data = set of voxels that will be used for the actual statistics
+cd(path_tbss); %set tbss folder as current path
+cmd=['tbss_4_prestats 0.2']; %0.2 is a value that generally works well
+system(cmd);
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%% SECTION 2 -- VOXEL-WISE statistics + clust-based permutations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Logical steps:
+% - Sending permutations to the cluster over several iterations for
+% parallelisation.
+% - Defining permutations based cluster threshold
+% - Running ttest on the original data contrasting old and young FA values
+% per voxel 
+% - Defining significantly big clusters
+% - Exporting them to a NII file for future probabilistic tractography and
+% visual inspection in FSLeyes
+
+%% %%% STEP 1 %%% Cluster based permutations and defining cluster size threshold
+
+
+% !!Preparation: do once
+% Parallelizing and sending jobs with permutations function to the cluster
+
+S = []; % creating a structure to feed to the permutation function
+
+S.nperm = 100; % amount of permutations per iteration
+S.iteration = 0; % preallocating iteration value 
+S.path_out='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/'; %set the path to the folder where you will save your converted data
+S.fname = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss/stats/all_FA_skeletonised.nii.gz';
+% Sending jobs to the cluster
+addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions') % path to the scripts folder
+for iter = 1:100
+    clusterconfig('scheduler', 'cluster'); %set the cluster
+    % clusterconfig('scheduler', 'none'); %set locally
+    clusterconfig('long_running', 0); %set the most typical cue (see our cluster guide in labook for details)
+    clusterconfig('slot', 2); %set amount of memory; between 1 and 12 (each slot is 8gb of ram)
+    S.iteration = iter;
+    addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions') % path to the scripts folder
+    jobid = job2cluster(@ttest_perm_func,S)
+end
+
+%% %%% STEP 2 %%%  ttest on the original data
+
+%uploading the allFa
+fname = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss/stats/all_FA_skeletonised.nii.gz';
+skel1 = load_nii(fname); %Load all_FA_skeletonised file (4D file)
+refNii = skel1;
+skel1=skel1.img;
+SS = size(skel1(:,:,:,1));
+ind = find(skel1(:,:,:,1) ~= 0); %getting indices of non-0 voxels (indeces that only belong to brain areas, not empty space)
+[i1,i2,i3] = ind2sub(size(skel1(:,:,:,1)),ind); %reshaping the vector into a 3D matrix shaped as the original data (skel) = get one vector for each dimension
+
+%%
+participant_info = readtable('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss/Descript_Dat/Participant_categories_AuditMemDement_ages.xlsx'); % loading behavioural data
+%
+path_out='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/'; %set the path to the folder where you will save your converted data
+
+path5=dir([path_out '0*']);
+DTI = zeros(length(participant_info.Group),1);
+%0) Copy and rename *_FA.nii.gz files from each subject into a new folder, where tbss will be run - fast
+a = 0;
+for gg=1:length(path5)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        a = a+1;
+        DTI(gg,1) = 1;
+    end
+end
+participant_info.DTI = DTI;
+%
+%
+Valid_participant_info  = participant_info(participant_info.DTI==1,:);
+Y_Selection1 = ismember(Valid_participant_info.Group,{'A'});
+O_Selection1 = ismember(Valid_participant_info.Group,{'B'});
+%O_Selection = ismember(Valid_participant_info.Group,{'B','B_MCI'});
+D_Selection = ismember(Valid_participant_info.Group,{'C'});
+%%
+SubSet = Y_Selection|O_Selection;
+Y_Selection = Y_Selection(SubSet);
+O_Selection = O_Selection(SubSet);
+%%
+figure
+hist(Valid_participant_info.Age(Y_Selection))
+hold on
+hist(Valid_participant_info.Age(O_Selection))
+hold off
+%%
+participant_info = readtable('/aux/MINDLAB2021_MEG-TempSeqAges/Nikita/TSA2021_Nikita.xlsx'); % loading behavioural data
+
+%starting up some of the functions by LB for the following analysis
+pathl = '/projects/MINDLAB2017_MEG-LearningBach/scripts/Leonardo_FunctionsPhD'; %path to stored functions (THIS MUST BECOME A FOLDER ON YOUR OWN COMPUTER)
+addpath(pathl);
+LBPD_startup_D(pathl);
+
+
+%Converting 0 no NaN
+participant_info.WMCombined(participant_info.WMCombined==0)=NaN;
+participant_info.STMMelody(participant_info.STMMelody==0)=NaN;
+participant_info.STMRhythm(participant_info.STMRhythm==0)=NaN;
+
+ValidRows = ~isnan(participant_info.WMCombined); %IF you want to test for WM relations afterwards
+%ValidRows = participant_info.Subject~=1;
+Valid_dat = participant_info(ValidRows,:); %defining a dataset with participants that have all the behavioural tests
+Young = Valid_dat.Subject(Valid_dat.Age < 27);
+Old = Valid_dat.Subject(Valid_dat.Age > 55);
+Y_Selection = ismember(Valid_dat.Subject,Young);
+O_Selection = ismember(Valid_dat.Subject,Old);
+%%
+figure
+histogram(Valid_dat.Age(O_Selection))
+hold on
+histogram(Valid_participant_info.Age(O_Selection1), 'FaceColor', [0.85 0.33 0.10])
+hold off
+%%
+%starting up some of the functions by LB for the following analysis
+pathl = '/projects/MINDLAB2017_MEG-LearningBach/scripts/Leonardo_FunctionsPhD'; %path to stored functions (THIS MUST BECOME A FOLDER ON YOUR OWN COMPUTER)
+addpath(pathl);
+LBPD_startup_D(pathl);
+
+%subsetting only relevant images
+%skel = skel1(:,:,:,:); % need this step to dublicate the skel file, otherwise running out of memory when trying to load it at later stages
+skel = skel1(:,:,:,SubSet);
+%%
+
+% setting tvalue threshold for future binarisation
+num_part = size(skel,4);
+df_age = num_part - 2;
+t_Thresh_age = tinv(1-0.005/2,df_age);
+
+%%
+
+% preallocating vectors to store pvalue and tvalue per voxel
+P = zeros(length(i1),1);
+TVAL = zeros(length(i1),1);
+for nn = 1:length(ind) %Loop across voxels
+    a = squeeze(skel(i1(nn),i2(nn),i3(nn),Y_Selection)); %take 1st group of subjects
+    b = squeeze(skel(i1(nn),i2(nn),i3(nn),O_Selection)); %take 2nd group of subjects
+    [~,p,~,stats] = ttest2(a,b,'Vartype','equal'); %compute t-test between the two groups
+    P(nn,1) = p; %store p-values in P
+    TVAL(nn,1) = stats.tstat; %store t-values in TVAL
+    %disp([num2str(nn) '/' num2str(length(ind))])
+end
+%reshaping them into 3D matrices
+TVAL2 = zeros(SS(1),SS(2),SS(3));
+P2 = zeros(SS(1),SS(2),SS(3));
+for ii =1:length(i1)
+    TVAL2(i1(ii),i2(ii),i3(ii)) = TVAL(ii);
+    P2(i1(ii),i2(ii),i3(ii)) = P(ii);
+end
+
+% Using bwconncomp -- efficient function for detecting clusters in 2d or 3d
+% data
+conn = 26; % for detecting neighbouring binarised neighbours in 3d space
+
+Bin_PVAL_Age_WM3D = zeros(size((TVAL2))); % preallocating zeros of same size
+Bin_PVAL_Age_WM3D((TVAL2>t_Thresh_age)) = 1; % binarising based on the t-value threshold defined earlier
+CC_Age = bwconncomp(Bin_PVAL_Age_WM3D,conn); % detecting clusters
+
+a_Age = CC_Age.PixelIdxList; % extracting cell list with all of my clusters
+lengths_Age = cellfun(@length,a_Age); % Creating a vector with corresponding size for each of the detected vectors
+disp('DONE')
+%%  %%% STEP 3 %%%  defining permutation based cluster size threshold
+my_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss_combined/stats/Age_WM_ClustPerm_Combined'; % directory with permutation results
+
+% setting up permutation matrices (combining several iterations into one matrix)
+
+AgeEffClust = load([my_dir, '/Permutation_res_ttest_Age_Clusters_iteration_',num2str(1),'.mat']);
+names = fieldnames(AgeEffClust);
+AgePerms = AgeEffClust.(names{1});
+
+for i = 2:100
+    AgeEffClust = load([my_dir, '/Permutation_res_ttest_Age_Clusters_iteration_',num2str(i),'.mat']);
+    names = fieldnames(AgeEffClust);
+    AgePerms_iter = AgeEffClust.(names{1});
+    AgePerms = [AgePerms;AgePerms_iter];
+end
+
+% Thresholding
+AgePerms_T = AgePerms(:,1);% looking at the biggest cluster per permutation
+AgeThreshold = prctile(AgePerms_T,95);% finding 95 percentile cluster size 
+%%
+Orig_stat = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss_combined/stats/Age_ttest_clust_Origin.mat');
+CC_Age = Orig_stat.CC_Age;
+a_Age = CC_Age.PixelIdxList; % extracting cell list with all of my clusters
+lengths_Age = cellfun(@length,a_Age); % Creating a vector with corresponding size for each of the detected vectors
+
+
+%%
+
+Sign_Age_Clust = a_Age(find(lengths_Age>AgeThreshold)); %finding sigificantly big clusters in the original data
+
+% sanity check: looking if mean FA value among my significant clusters
+% differs between age groups. Take into account !circularity!: these clusters
+% were already identified using a ttest between age groups, so that is
+% purely a sanity check to see that nothing went wrong
+nSub = size(skel,4);
+nClust_Age = numel(Sign_Age_Clust);
+meanFA_Age = nan(nSub,nClust_Age);
+for i = 1:nClust_Age
+    idx = Sign_Age_Clust{i};
+    faVals = reshape(skel(idx+(0:nSub-1)*prod(SS)),[],nSub);
+    meanFA_Age(:,i) = sum(faVals,1)';
+end
+Grand_Mean_FA = mean(meanFA_Age,2);
+[~,p,~,stats] = ttest2(Grand_Mean_FA(Y_Selection),Grand_Mean_FA(O_Selection))
+
+% Saving significant clusters as nifti images
+
+% combining all voxel indices from my significant clusters into one list,
+% just to save my significant clusters as one file. Inspect in FSLeyes for
+% visual check, they remain as independent clusters spacially.
+all_idx_Age = Sign_Age_Clust{1};
+
+for i = 2:length(Sign_Age_Clust)
+    idx = Sign_Age_Clust{i};
+    all_idx_Age = [all_idx_Age;idx];
+end
+%%
+% Saving my significant white matter clusters to a nifti image
+maskVol_age = zeros (SS,'uint8');
+maskVol_age(all_idx_Age) = 1;
+
+%refNii = load_nii(fname);
+refNii.img = maskVol_age;
+refNii.hdr.dime.dim(1) = 3;
+refNii.hdr.dime.dim(2:4) = SS;
+refNii.hdr.dime.dim(5) = 1;
+refNii.hdr.dime.datatype = 2;
+refNii.hdr.dime.bitpix = 8;
+%
+save_nii(refNii,'Age_ClustOY2.nii.gz');
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%% SECTION 3 -- PROBABILISTIC TRACTOGRAPHY
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Running 2 forms: First creates a usual 90x90 connectivity matrix (AAL
+% parcellation). Second only keeps seeds that touched at least one voxel in
+% the ageing white matter cluster
+%% PROBABILISTIC TRACTOGRAPHY - FSL
+%BedpostX (using markov chain Monte Carlo) (slow, about 15 hours)
+
+path1=dir([path_out '/0*']); %query the content of the folder "raw": it contains one folder for each subject
+% A) Create and input directory for BedpostX (DTI001_BedpostX in this case)
+% for each subject
+for ii=2:length(path1) %loop across all subjects
+    mkdir([path1(1).folder '/' path1(ii).name], [path1(ii).name '_BedpostX']);  %create a new folder for each subject (ii) and name it 'subjectID_Bedpostx'
+end
+
+%%  B) Add the following files to the folder
+% 1) "data.nii.gz" which is the renamed version of "eddy_unwarped_images.nii.gz"
+% 2) "nodif_brain_mask.nii.gz" mask (you already have it)
+% 3) "bvals" obtained from initial nifti convertion (here we renamed "20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bval" as "bvals"
+% 4) "bvecs" obtained from initial nifti convertion (here we renamed "20180123_102505cmrrmbep2ddiffmultidirAPSubjectNo0001s014a001.bvec" as "bvecs"
+
+path1=dir([path_out '/0*']); %query the content of the folder "raw": it contains one folder for each subject
+path5=dir([path_out '0*']);
+for gg=1:length(path1)
+    path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        path_bed=dir([path1(1).folder '/' path1(gg).name '/' path1(gg).name '_BedpostX' ]); %path to BedpostX folder
+        path_datanii=[path1(1).folder '/' path1(gg).name '/eddy_unwarped_images.nii.gz']; %path(gg) to eddy unwarped images
+        path_nodif=[path1(1).folder '/' path1(gg).name '/hifi_nodif_brain_mask.nii.gz']; %path to nodif_brain_mask
+        path_sub=dir([path1(1).folder '/' path1(gg).name '/20*']); %path to each subject's main folder and relative content
+        path_bvals=[path_sub(1).folder '/' path_sub(1).name];%path to each subject's .bval file
+        path_bvecs= [path_sub(1).folder '/' path_sub(2).name];%path to each subject's .bvec file
+        copyfile(path_datanii,[path_bed(1).folder '/data.nii.gz']); %copy eddy_unwarped_images and rename it as "data.nii.gz"
+        delete(path_datanii); %remove eddy_unwarped_images from subject's main folder
+        %remove oiginal eddy
+        copyfile(path_nodif,[path_bed(1).folder '/nodif_brain_mask.nii.gz']); %copy hifi_nodif_brain_mask and rename it as nodif_brain_mask
+        copyfile(path_bvals,[path_bed(1).folder '/bvals']); %copy .bval file and rename it as "bvals"
+        copyfile(path_bvecs,[path_bed(1).folder '/bvecs']); %copy .bvec file and rename it as "bvecs"
+        disp(gg)
+    end
+end
+
+%%  C) calling terminal command with "bedpostx" operating in the desired directory (bedpostx) - slow (More then 70)
+
+path1=dir([path_out '0*']); %query the content of the folder "raw": it contains one folder for each subject
+for gg = 1:length(path1)
+    path_bed_run = [path1(1).folder '/' path1(gg).name '/' path1(gg).name '_BedpostX' ]; %path to BedpostX folder
+    %cd(path_bed); %change directory for each subject
+    cmd = ['submit_to_cluster -q long.q -n 1 -p MINDLAB2023_MEG-AuditMemDement "/usr/local/fsl/bin/bedpostx ' path_bed_run '"']; %submit BedpostX to cluster
+    system(cmd)
+    disp(gg)
+end
+% cmd = 'bedpostx /projects/MINDLAB2017_MEG-LearningBach/scratch/DTI_Portis/DTI001/DTI001_BedpostX';
+%bedpostx command
+%directory that you created (/projects/MINDLAB2017_MEG-LearningBach/scratch/DTI_Portis/DTI001/DTI001_BedpostX)
+% system(cmd)
+%%
+path=dir([path_out '0*']); %path to subjects
+for ii = 2:length(path) %over subjects
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        disp(ii)
+        %going to subject's directory
+        cd([path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX'])
+        copyfile('nodif_brain_mask.nii.gz','nodif_brain.nii.gz') %copying mask file (just to rename it..)
+        %actual command line for registration with flirt (FSL)
+        cmd = 'flirt -in nodif_brain.nii.gz -ref /scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/AAL_Templates/MNI152_T1_2mm_brain.nii.gz -omat diff2stand.mat';
+        system(cmd) 
+        %moving the output file into the bedpostX xfms subfolder
+        copyfile('diff2stand.mat',[path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/diff2stand.mat'])
+        load([path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/diff2stand.mat'],'-ascii') %loading the matrix computed by flirt
+        %then, since we need to get the inverse matrix, it seems that we can simply compute it, as follows:
+        stand2diff = inv(diff2stand);
+        save([path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/stand2diff.mat'],'stand2diff','-ascii') %saving the inverse matrix
+        disp(ii)
+    end
+end
+
+%%  %%% STEP 1 %%%  Preparation
+% Rescaling AAL parcels and white matter cluster to individual diffusion
+% space per participant. Then creating a file that stores ROI sizes in
+% individual diffusion space (for future normalisation)
+
+% *Step 1* converting my waipoint (white matter cluster) mask to individual diffusion space
+path = dir('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*'); %path to subjects
+ClustMNI = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss/stats/Age_ClustOY2.nii.gz'; % Ageing cluster dir (IN MNI SPACE)
+for ii = 2:length(path)
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        subjPath = fullfile(path(ii).folder, path(ii).name);
+        bedDir = fullfile(subjPath,[path(ii).name,'_BedpostX.bedpostX']);
+        xfm_mat = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/stand2diff.mat'];
+        nodifmaskbrain = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/nodif_brain.nii.gz'];
+        Mask_roi_dir = [path(ii).folder '/' path(ii).name '/ttestcluster_OY_ThisData'];
+        if ~exist(Mask_roi_dir,'dir')
+            mkdir(Mask_roi_dir);
+        end
+        parcel_path = ClustMNI;
+        clust_path = [path(ii).folder '/' path(ii).name '/ttestcluster_OY_ThisData/ttestClust_waypoint_Comb.nii.gz'];
+        cmd = sprintf(['/usr/local/fsl/bin/applywarp ' '--in=%s --ref=%s --out=%s --premat=%s --interp=nn'], parcel_path, nodifmaskbrain, clust_path, xfm_mat);
+        system(cmd)
+    end
+    disp([num2str(ii) '/' num2str(length(path))])
+end
+%%
+% *Step 2* converting AAL mask to individual diffusion space
+path = dir('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*'); %path to subjects
+AAL_Masks = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/AAL_Templates/AAL_2mm_90ROIs';
+AAL_Masks_dir = dir(AAL_Masks);
+for ii = 2:length(path)
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        subjPath = fullfile(path(ii).folder, path(ii).name);
+        bedDir = fullfile(subjPath,[path(ii).name,'_BedpostX.bedpostX']);
+        xfm_mat = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/stand2diff.mat'];
+        nodifmaskbrain = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/nodif_brain.nii.gz'];
+        Mask_roi_dir = [path(ii).folder '/' path(ii).name '/AAL_ind_diff_space'];
+        if ~exist(Mask_roi_dir,'dir')
+            mkdir(Mask_roi_dir);
+        end
+        for jj = 1:length(AAL_Masks_dir)-2
+            parcel_path = [AAL_Masks_dir(jj+2).folder '/' AAL_Masks_dir(jj+2).name];
+            clust_path = [path(ii).folder '/' path(ii).name '/AAL_ind_diff_space/'  AAL_Masks_dir(jj+2).name];
+            cmd = sprintf(['/usr/local/fsl/bin/applywarp ' '--in=%s --ref=%s --out=%s --premat=%s --interp=nn'], parcel_path, nodifmaskbrain, clust_path, xfm_mat);
+            system(cmd)
+        end
+    end
+    disp([num2str(ii) '/' num2str(length(path))])
+end
+%%
+result = [];
+for i = 1:9
+    result = [result,i];
+    for j = 0:9
+        num = i*10+j
+        result = [result,num]
+    end
+end
+file_list_numbers = result(1:90)
+
+
+reshap_order = [];
+for i = 1:90
+    posit = find(file_list_numbers == i);
+    reshap_order = [reshap_order,posit];
+end
+%%
+% *Step 3* creating directories for individual masks.txt files (directories to all aal parcels for probabilistic tractography)
+path = dir('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*');
+for ii = 2:length(path) %over subjects
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        file_name = 'masks.txt';
+        masks_path = fullfile([path(ii).folder '/' path(ii).name], file_name);
+        fid = fopen(masks_path, 'w'); % just creating the empty txt to adjust later
+        fclose(fid);
+        
+        masks_folder = [path(ii).folder '/' path(ii).name '/AAL_ind_diff_space'];
+        curr_dir = [path(ii).folder '/' path(ii).name];
+        list_AAL_files = dir(masks_folder); % get the struckt with all the
+        output_file = fullfile(curr_dir, 'masks.txt');
+        fid = fopen (output_file, 'w');
+
+        for k = reshap_order %this loop ads directories of every AAL parcellation file to the txt list
+            curr_ind = k+2;
+            fullpath = fullfile(masks_folder,list_AAL_files(curr_ind).name);
+            fprintf(fid, '%s\n', fullpath);
+        end
+    end
+end
+%%
+NumOfValid_Subj = 0;
+for ii = 1:length(path) %over subjects
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %Check if folder has data
+    if ~isempty(path6)
+        NumOfValid_Subj=NumOfValid_Subj+1;
+    end
+end
+%%
+% *Step 4* Creating a file with all ROI sizes for future normalisation
+ROI_sizes = zeros(90,NumOfValid_Subj);
+path = dir('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*'); %path to subjects
+order = [1:2:90 90:-2:2]; %to reshape the matrix symmetricaly  
+subjCounter = 0;
+for ii = 1:length(path) %over subjects
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %Check if folder has data
+    if ~isempty(path6)
+        subjCounter = subjCounter+1;
+        ROI_sizes_temp = zeros(90,1);
+        for pp = 1:90 %over ROI1
+            %loading image ROI1
+            ROI1 = load_untouch_nii([path(ii).folder '/' path(ii).name '/AAL_ind_diff_space/' num2str(pp) '.nii.gz']);
+            sizeROI1 = length(find(ROI1.img==1)); %calculating size of Rx = []; x.bottom = [0 0 0.5]; x.botmiddle = [0 0.5 1]; x.middle = [1 1 1]; x.topmiddle = [1 0 0]; x.top = [0.6 0 0]; %red - bluecolormap(bluewhitered_PD(0,x))OI1 (number of voxels)
+            ROI_sizes_temp(pp,1) = sizeROI1;
+            disp(['Subject = ' path(ii).name ' - ROI1 = ' num2str(pp)])
+        end
+        ROI_sizes (:,subjCounter) = ROI_sizes_temp(order,1);
+    end
+end
+
+%%
+Mask_roi_dir = ['/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Combined'];
+if ~exist(Mask_roi_dir,'dir')
+    mkdir(Mask_roi_dir);
+end
+%%
+tmp = load('/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory_Age_Diff/ROI_sizes.mat');
+ROI_sizes = tmp.ROI_sizes;
+
+%%  %%% STEP 2 %%%  Probabilistic tractography itself
+% Tractography 1: creating 90 by 90 connectivity matirx with AAL90 parcellation
+
+mask_label=2; %flag for mask type: 1=3559 parcels; 2=2mm AAL
+streamlines=5000; %set streamlines number (5000 streamlines for AAL 2mm)
+
+
+path = dir('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*'); %path to subjects
+wpNames = {'Age_ttest'};
+wp = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/tbss/stats/perm_res_final/Age_MainEff_Clust.nii.gz';
+for ii = 1:length(path) %over subjects
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        if mask_label ==1
+            mask = ['/scratch7/MINDLAB2017_MEG-LearningBach/DTI_Portis/Templates/parcel_80mm_3559ROIs/masks.txt']; %3559 parcels
+            outdir = [path(ii).folder '/' path(ii).name '/Tractography/parce3559_' num2str(streamlines) 'stream']; %output directory
+        elseif mask_label==2
+            mask = [path(ii).folder '/' path(ii).name '/masks.txt'];%2-mm AAL
+            %UPDATE THE DIRECTORY OF THE MASK
+        end
+        xfm_mat = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/stand2diff.mat']; %registration matrix
+        invxfm_mat = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/diff2stand.mat']; %registration matrix (inverse)
+        mergedk = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/merged']; %merged files from bedpostX
+        nodifmask = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/nodif_brain_mask']; %brain mask from bedpostX
+        
+        wp = [path(ii).folder '/' path(ii).name '/ttestcluster_Combined/ttestClust_waypoint_Comb.nii.gz'];
+        foldnam = wpNames{1};
+        outdir = [path(ii).folder '/' path(ii).name '/Tractography_AgeDiff/NoCluster/' foldnam '/AAL90_' num2str(streamlines) 'stream'];
+        if ~exist(outdir,'dir')
+            mkdir(outdir);
+        end
+        %actual line for probtrackx - FSL
+        cmd = ['submit_to_cluster -q long.q -n 2 -p MINDLAB2023_MEG-AuditMemDement "/usr/local/fsl/bin/probtrackx2 --network -x ' mask ' -l --onewaycondition -c 0.2 -S 2000 --steplength=0.5 -P ' num2str(streamlines) ' --fibthresh=0.01 --distthresh=0.0 --sampvox=0.0' ' --forcedir --opd -s ' mergedk ' -m ' nodifmask ' --dir=' outdir '"'];
+        system(cmd)
+        disp([num2str(ii) '/' num2str(length(path))])
+    end
+end
+%%
+% Tractography 2: Counting only streamlines passing through the white matter cluster
+% (condition: seed passes through at least one voxel of the cluster along its way from one parcel to the next)
+
+mask_label=2; %flag for mask type: 1=3559 parcels; 2=2mm AAL
+streamlines=5000; %set streamlines number (5000 streamlines for AAL 2mm)
+
+path = dir('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*'); %path to subjects
+wpNames = {'Age_ttest'};
+for ii = 2:length(path) %over subjects
+    path6=dir([path(ii).folder '/' path(ii).name '/20*']); %loop across each subject and get the content of each subject's folder
+    if ~isempty(path6)
+        if mask_label ==1
+            mask = ['/scratch7/MINDLAB2017_MEG-LearningBach/DTI_Portis/Templates/parcel_80mm_3559ROIs/masks.txt']; %3559 parcels
+            outdir = [path(ii).folder '/' path(ii).name '/Tractography/parce3559_' num2str(streamlines) 'stream']; %output directory
+        elseif mask_label==2
+            mask = [path(ii).folder '/' path(ii).name '/masks.txt'];%2-mm AAL
+            %UPDATE THE DIRECTORY OF THE MASK
+        end
+        xfm_mat = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/stand2diff.mat']; %registration matrix
+        invxfm_mat = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/xfms/diff2stand.mat']; %registration matrix (inverse)
+        mergedk = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/merged']; %merged files from bedpostX
+        nodifmask = [path(ii).folder '/' path(ii).name '/' path(ii).name '_BedpostX.bedpostX/nodif_brain_mask']; %brain mask from bedpostX
+        %looping over cluster types
+        wp = [path(ii).folder '/' path(ii).name '/ttestcluster_OY_ThisData/ttestClust_waypoint_Comb.nii.gz'];
+        foldnam = wpNames{1};
+        outdir = [path(ii).folder '/' path(ii).name '/Tractography_AgeDiff/WM_Cluster_ThisDat/' foldnam '/AAL90_' num2str(streamlines) 'stream'];
+        if ~exist(outdir,'dir')
+            mkdir(outdir);
+        end
+        %actual line for probtrackx - FSL
+        cmd = ['submit_to_cluster -q long.q -n 2 -p MINDLAB2023_MEG-AuditMemDement "/usr/local/fsl/bin/probtrackx2 --network -x ' mask ' --waypoints=' wp ' --waycond=OR' ' -l --onewaycondition -c 0.2 -S 2000 --steplength=0.5 -P ' num2str(streamlines) ' --fibthresh=0.01 --distthresh=0.0 --sampvox=0.0' ' --forcedir --opd -s ' mergedk ' -m ' nodifmask ' --dir=' outdir '"'];
+        system(cmd)
+        disp([num2str(ii) '/' num2str(length(path))])
+    end
+end
+
+%% clear the workspace before the next section
+clear all
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%% SECTION 4 -- Analysing connectivity matrices and
+%%%%%%%%%%%%%%%%% performing virtual lesion
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  %%% STEP 1 %%% Computing permutations of the virtual lesion
+% sending to the cluster over several iterations for parallelisation
+% 3 types of permutations: 
+% - streamline permutations, preserving the total lesion weight. Logically
+% in the permutations every single streamline has an equal chance of being
+% removed. (permuting at the streamline level, direct output from probabilistic tractography)
+% - permuting proportions of lesion for each edge. First computing the
+% proportion of streamlines going through the cluster against all the
+% streamlines in the corresponding edge, then permuting these proportions:)
+% - permutations preserving the degree. Built-in Brain Conn Toolbox
+% function. This step is required to identify rich club nodes.
+
+
+% Weight-preserved permutations 
+S = [];
+S.path = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*';
+S.Roi_sizes = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing/ROI_sizes.mat';
+addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions');
+S.iteration = 0;
+S.nperm = 500;
+S.outdir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/';
+S.perc = 0;
+S.subdir_raw = '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/';
+S.subdir_clust = '/Tractography_AgeDiff/WM_Cluster_CrossCheck/Age_ttest/AAL90_5000stream/';
+S.partStart = 1;
+for perc = 5%4:6
+    S.perc = perc;
+    for iter = 1:20
+        clusterconfig('scheduler', 'cluster'); %set the cluster
+        % clusterconfig('scheduler', 'none'); %set locally
+        clusterconfig('long_running', 2); %set the most typical cue (see our cluster guide in labook for details)
+        clusterconfig('slot', 2); %set amount of memory; between 1 and 12 (each slot is 8gb of ram)
+        S.iteration = iter;
+        jobid = job2cluster(@perm_les_func_streams,S)
+    end
+end
+
+
+
+%%
+% Weight-preserved permutations 
+S = [];
+S.path = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/0*';
+S.Roi_sizes = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory_Age_Diff/ROI_sizes.mat';
+addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions');
+S.iteration = 0;
+S.nperm = 500;
+S.outdir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/';
+S.perc = 0;
+S.subdir_raw = '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/';
+S.subdir_clust = '/Tractography_CrossCheckOY_Fin/AAL_Clust_full/Age_ttest/AAL90_5000stream/';
+S.partStart = 1;
+for perc = 5%4:6
+    S.perc = perc;
+    for iter = 1:20
+        clusterconfig('scheduler', 'cluster'); %set the cluster
+        % clusterconfig('scheduler', 'none'); %set locally
+        clusterconfig('long_running', 2); %set the most typical cue (see our cluster guide in labook for details)
+        clusterconfig('slot', 2); %set amount of memory; between 1 and 12 (each slot is 8gb of ram)
+        S.iteration = iter;
+        jobid = job2cluster(@perm_les_func_streams,S)
+    end
+end
+
+
+%% A little permutation fixer option if some of the permutations failed to be saved / computed
+% it checks if the file for each participant and iteration exists and if it
+% detects a problem - permutations are recomputed starting from the
+% participant where the problem was detected and for the rest of the
+% participants for this iteration. This convoluted approach is because of
+% how permutation function works in the first place: for each iteration it
+% computes batches of n permutation for each participant. So if participant
+% x iteration y was not saved it means that iteration y was not saved for
+% all the participants after x as well
+S = [];
+S.path = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/0*';
+S.Roi_sizes = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory_Age_Diff/ROI_sizes.mat';
+addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions');
+S.iteration = 0;
+S.nperm = 250;
+S.outdir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/';
+S.perc = 0;
+S.subdir_raw = '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/';
+S.subdir_clust = '/Tractography_CrossCheckOY_Fin/AAL_Clust_full/Age_ttest/AAL90_5000stream/';
+curr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/Streamline_Permuts/density_';
+S.partStart = 1;
+for perc = 3%1:9
+    S.perc = perc*10;
+    for iter = 1%5:40
+        for participant = 40%1:npart
+            if exist([curr_dir num2str(perc*10) '/permut_les_mat' num2str(participant) '_iter_' num2str(iter) '.mat']);
+                S.partStart = participant;
+                clusterconfig('scheduler', 'cluster'); %set the cluster
+                % clusterconfig('scheduler', 'none'); %set locally
+                clusterconfig('long_running', 2); %set the most typical cue (see our cluster guide in labook for details)
+                clusterconfig('slot', 2); %set amount of memory; between 1 and 12 (each slot is 8gb of ram)
+                S.iteration = iter;
+                jobid = job2cluster(@perm_les_func_streams,S)
+                disp(['dens ' num2str(S.perc) ' part ' num2str(participant) ' iter ' num2str(iter)])
+                break
+            end
+        end
+    end
+end
+
+
+%% Running rich club permutations
+
+S = [];
+S.path = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*';
+S.Roi_sizes = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing/ROI_sizes.mat';
+addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions');
+S.iteration = 0;
+S.nperm = 500;
+S.outdir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/';
+S.perc = 0;
+S.subdir_raw = '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/';
+S.subdir_clust = '/Tractography_AgeDiff/WM_Cluster_CrossCheck/Age_ttest/AAL90_5000stream/';
+
+for perc = 5%4:8
+    S.perc = perc;
+    for iter = 1:20
+        clusterconfig('scheduler', 'cluster'); %set the cluster
+        % clusterconfig('scheduler', 'none'); %set locally
+        clusterconfig('long_running', 1); %set the most typical cue (see our cluster guide in labook for details)
+        clusterconfig('slot', 2); %set amount of memory; between 1 and 12 (each slot is 8gb of ram)
+        S.iteration = iter;
+        jobid = job2cluster(@rich_club_perm_new,S)
+    end
+end
+
+
+%%
+S = [];
+S.path = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/0*';
+S.Roi_sizes = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory_Age_Diff/ROI_sizes.mat';
+addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions');
+S.iteration = 0;
+S.nperm = 500;
+S.outdir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/TempSeq/';
+S.perc = 0;
+S.subdir_raw = '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/';
+S.subdir_clust = '/Tractography_CrossCheckOY_Fin/AAL_Clust_full/Age_ttest/AAL90_5000stream/';
+curr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/Streamline_Permuts/density_';
+
+for perc = 5%4:8
+    S.perc = perc;
+    for iter = 1:20
+        clusterconfig('scheduler', 'cluster'); %set the cluster
+        % clusterconfig('scheduler', 'none'); %set locally
+        clusterconfig('long_running', 1); %set the most typical cue (see our cluster guide in labook for details)
+        clusterconfig('slot', 2); %set amount of memory; between 1 and 12 (each slot is 8gb of ram)
+        S.iteration = iter;
+        jobid = job2cluster(@rich_club_perm_new,S)
+    end
+end
+
+%%
+% Combining the permutations into a single structure
+% Streamline permutations
+nperm = 10000;
+npart = size(Raw_streams,3);
+batch_size = 250;
+curr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/Streamline_Permuts/density_';
+save_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/Streamline_Permuts/';
+for perc = 3%4:6
+    this_perc_perm_eff = zeros(nperm , npart);
+    this_perc_perm_clust = zeros(90,nperm, npart);
+    this_perc_perm_deg = zeros(90,nperm, npart);
+    for participant = 1:npart
+        this_p_eff = zeros(nperm,1);
+        this_p_clust = zeros(90,nperm);
+        this_p_deg = zeros(90,nperm);
+        for iter = 1:40
+            this_it_perm = load([curr_dir num2str(perc*10) '/permut_les_mat' num2str(participant) '_iter_' num2str(iter) '.mat']);
+            this_it_perm = this_it_perm.this_part_struct;
+            eff = this_it_perm.efficiency;
+            clust = this_it_perm.clustering_coef;
+            deg = this_it_perm.degree_les;
+            window_move = iter -1;
+            this_p_eff((window_move*batch_size+1):(window_move*batch_size+batch_size), 1) = eff;
+            this_p_clust(: ,(window_move*batch_size+1):(window_move*batch_size+batch_size)) = clust;
+            this_p_deg(: ,(window_move*batch_size+1):(window_move*batch_size+batch_size)) = deg;
+        end
+        this_perc_perm_eff(:, participant) = this_p_eff;
+        this_perc_perm_clust(:,:, participant) = this_p_clust;
+        this_perc_perm_deg(:,:, participant) = this_p_deg;
+        disp(participant)
+    end
+    perc_perm_str = [];
+    perc_perm_str.eff = this_perc_perm_eff;
+    perc_perm_str.clust = this_perc_perm_clust;
+    perc_perm_str.deg = this_perc_perm_deg;
+    save([save_dir 'perm_str_' num2str(perc*10) '.mat'],'perc_perm_str')
+    disp('PERC DONE')
+end 
+
+%%  %%% STEP 2 %%% Setting up connectivity matrices and ROI sizes.
+addpath('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/Functions')
+Dataset_switch = 1; % Change to upload connectivity matrices from a certain dataset 0 = TemoSeqAges, 1 = Dementia
+MNI_clust = 0;% 0 = TemoSeqAges clust, 1 = AuditMemDement, 2 = Combined
+if Dataset_switch == 0
+    S = [];
+    S.path = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/00*';
+    S.Roi_sizes = '/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory_Age_Diff/ROI_sizes.mat';
+    S.subdir_raw = '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/';
+    if MNI_clust == 0
+        S.subdir_clust = '/Tractography_AgeDiff_005/AAL_Clust_full/Age_ttest/AAL90_5000stream/';
+    elseif MNI_clust == 1
+        S.subdir_clust = '/Tractography_CrossCheckOY_Fin/AAL_Clust_full/Age_ttest/AAL90_5000stream/';
+    else
+        S.subdir_clust = '/Tractography_AgeDiff/WM_Cluster_Combined/Age_ttest/AAL90_5000stream/';
+    end
+    
+    %Y/O separation
+    participant_info = readtable('/aux/MINDLAB2021_MEG-TempSeqAges/Nikita/TSA2021_Nikita.xlsx'); % loading behavioural data
+    
+    %Converting 0 no NaN
+    participant_info.WMCombined(participant_info.WMCombined==0)=NaN;
+    
+    ValidRows = ~isnan(participant_info.WMCombined); %IF you want to test for WM relations afterwards
+    %ValidRows = participant_info.Subject~=1;
+    Valid_dat = participant_info(:,:); %defining a dataset with participants that have all the behavioural tests
+    Young = Valid_dat.Subject(Valid_dat.Age < 27);
+    Old = Valid_dat.Subject(Valid_dat.Age > 55);
+    Y_Selection = ismember(Valid_dat.Subject,Young);
+    O_Selection = ismember(Valid_dat.Subject,Old);
+else
+    S = [];
+    S.path = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/0*';
+    S.Roi_sizes = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing/ROI_sizes.mat';
+    S.subdir_raw = '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/';
+    if MNI_clust == 0
+        S.subdir_clust = '/Tractography_AgeDiff/WM_Cluster_CrossCheck/Age_ttest/AAL90_5000stream/';
+    elseif MNI_clust == 2
+        S.subdir_clust = '/Tractography_AgeDiff/WM_Cluster_ThisDat/Age_ttest/AAL90_5000stream/';
+    else
+        S.subdir_clust = '/Tractography_AgeDiff/WM_Cluster_Combined/Age_ttest/AAL90_5000stream/';
+    end
+    
+    %Y/O separation
+    participant_info = readtable('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss/Descript_Dat/Participant_categories_AuditMemDement_ages.xlsx'); % loading behavioural data
+
+    path_out='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/'; %set the path to the folder where you will save your converted data
+    path5=dir([path_out '0*']);
+    DTI = zeros(length(participant_info.Group),1);
+    for gg=1:length(path5)
+        path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+        if ~isempty(path6)
+            DTI(gg,1) = 1;
+        end
+    end
+    participant_info.DTI = DTI;
+    Valid_participant_info  = participant_info(participant_info.DTI==1,:);
+    Y_Selection1 = ismember(Valid_participant_info.Group,{'A'});
+    O_Selection1 = ismember(Valid_participant_info.Group,{'B'});
+    %O_Selection = ismember(Valid_participant_info.Group,{'B','B_MCI'});
+    D_Selection = ismember(Valid_participant_info.Group,{'C'});
+    
+end
+
+
+
+
+
+mat_struct = load_conn_mat_dem(S)
+%%
+
+Thresholding_Mat = mat_struct.Thresholding_Mat; % will be used to perform consistency based thresholds
+Raw_streams = mat_struct.Raw_streams; % 3D matrix holding 90 by 90 connnectivity matrix for all participants
+Cluster_streams = mat_struct.Cluster_streams; % 3D matrix holding 90 by 90 connnectivity matrix ONLY streamlines going through the WM CLUSTER
+Lesion_mats = mat_struct.Lesion_mats; % 3D matrix holding my virtual lesion
+Prop_Mats = mat_struct.Prop_Mats; % 3D matrix holding per-edge proportion of streamlines going through the cluster
+ROI_sizes = mat_struct.ROI_sizes;
+order = [1:2:90 90:-2:2];
+npart = size(Raw_streams,3);
+
+this_perc_perm_eff = perm_str.eff;
+this_perc_perm_clust = perm_str.clust;
+this_perc_perm_deg = perm_str.deg;
+
+%%
+%Comb - combined connectivity matrices from participants of both datasets
+Thresholding_Mat = Comb;
+for perc = 3%1:9
+    my_prctile = perc*10;
+    Density_thresh = my_prctile;
+    
+    % computing sd and mean, since consistency is measured as sd/mean. 
+    sd_mat = std(Thresholding_Mat,0,3);
+    mean_mat = mean(Thresholding_Mat,3);
+    Consistecy_mat = sd_mat./mean_mat;
+    
+    % prunning the connectivity matrix, selecting only the top _x_ percentile
+    % of most consistent edges.
+    Edge_Mask = Consistecy_mat < prctile(Consistecy_mat(:),Density_thresh); % the smaller the value the higher the consistency, so we take values below the percentile
+    Edge_Mask = Edge_Mask(order,order);
+end
+%%
+%%
+
+Thresholding_Mat = mat_struct.Thresholding_Mat; % will be used to perform consistency based thresholds
+Raw_streams = mat_struct.Raw_streams; % 3D matrix holding 90 by 90 connnectivity matrix for all participants
+Cluster_streams = mat_struct.Cluster_streams; % 3D matrix holding 90 by 90 connnectivity matrix ONLY streamlines going through the WM CLUSTER
+Lesion_mats = mat_struct.Lesion_mats; % 3D matrix holding my virtual lesion
+Prop_Mats = mat_struct.Prop_Mats; % 3D matrix holding per-edge proportion of streamlines going through the cluster
+ROI_sizes = mat_struct.ROI_sizes;
+order = [1:2:90 90:-2:2];
+npart = size(Raw_streams,3);
+
+this_perc_perm_eff = perm_str.eff;
+this_perc_perm_clust = perm_str.clust;
+this_perc_perm_deg = perm_str.deg;
+%%  %%% STEP 3 %%% Investigating cluster impact across different connectivity matrix densities
+% Choose data to work with 0 - TempSeq 1 - AudMemDem
+dat_choice = 0;
+if dat_choice == 0
+    matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/MatStr.mat';
+    perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/Streamline_Permuts/perm_str_';
+else
+    matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/MatStr.mat';
+    perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/Streamline_Permuts/perm_str_';
+end
+tmp_Mat = load(matstr_dir);
+%tmp_Perm = load(perm_dir);
+mat_struct = tmp_Mat.mat_struct;
+%perm_str = tmp_Perm.perm_str;
+
+Raw_streams = mat_struct.Raw_streams; % 3D matrix holding 90 by 90 connnectivity matrix for all participants
+Cluster_streams = mat_struct.Cluster_streams; % 3D matrix holding 90 by 90 connnectivity matrix ONLY streamlines going through the WM CLUSTER
+Lesion_mats = mat_struct.Lesion_mats; % 3D matrix holding my virtual lesion
+Prop_Mats = mat_struct.Prop_Mats; % 3D matrix holding per-edge proportion of streamlines going through the cluster
+ROI_sizes = mat_struct.ROI_sizes;
+order = [1:2:90 90:-2:2];
+npart = size(Raw_streams,3);
+
+
+addpath('/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory/BCT/2019_03_03_BCT'); %add BCT functions to path (FFM)
+tmp_Thresh = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/CombThreshmat.mat');
+Thresholding_Mat = tmp_Thresh.Comb;
+npart = size(Raw_streams,3);
+dens_tested = 5;
+Eff_acr_dens = zeros(npart,dens_tested); % storing efficiency drop significance across densities across perticipants
+Eff_acr_dens_for_plot = zeros(npart,dens_tested,3);
+Clust_Coef_acr_dens = zeros(npart,90,dens_tested,2); % storing clustering coefficient drop significance for 90 AAL parcels across densities across perticipants
+Deg_dep_acr_dens = zeros(npart,90,dens_tested,2); % storing degree drop significance for 90 AAL parcels across densities across perticipants
+HDI_dens = zeros (npart,dens_tested); % storing slope between node degree and node loss for 90 AAL parcels across densities across perticipants 
+Or_Les_eff = zeros (4,dens_tested); % storing original ttest results for Efficiency drop and clustering coefficient drop
+FDR_singif_clustCoef = zeros(90,dens_tested);
+order = [1:2:90 90:-2:2];
+
+
+for perc = 1:5%9
+    my_prctile = perc*10;
+    Density_thresh = my_prctile;
+    
+    % computing sd and mean, since consistency is measured as sd/mean. 
+    sd_mat = std(Thresholding_Mat,0,3);
+    mean_mat = mean(Thresholding_Mat,3);
+    Consistecy_mat = sd_mat./mean_mat;
+    
+    % prunning the connectivity matrix, selecting only the top _x_ percentile
+    % of most consistent edges.
+    Edge_Mask = Consistecy_mat < prctile(Consistecy_mat(:),Density_thresh); % the smaller the value the higher the consistency, so we take values below the percentile
+    Edge_Mask = Edge_Mask(order,order); %reordering into left right matrix organisation
+    Edge_Mask_tri = Edge_Mask&~tril(true(size(Edge_Mask)),-1); % inspect the mast visually to be certain it includes only the upper triangle
+    My_edge_ind = find(Edge_Mask_tri); % Creating the vector with indices of my "valid" edges at selected density
+    
+    % setting up Participant ROI sizes for normalisation
+    Roi_Sub_mat = zeros(90,90,npart);
+    for participant = 1:npart
+        Roi_subj = ROI_sizes(:,participant);
+        Roi_subj = Roi_subj+Roi_subj.'; % takes a vector and converts it into a matrix where values a,b is sum of a+b. Exactly what we need to normalise the connections
+        Roi_Sub_mat (:,:,participant) = Roi_subj;
+    end
+    
+    %prunning my connectivity matrices
+    Raw_streams_norm = Raw_streams.* Edge_Mask;
+    Cluster_streams_norm = Cluster_streams.* Edge_Mask;
+    Lesion_mats_norm = Lesion_mats.* Edge_Mask;
+    
+    % normalising and getting rid of NaNs
+    Raw_streams_norm = Raw_streams_norm./ Roi_Sub_mat;
+    Raw_streams_norm((isnan(Raw_streams_norm))) = 0;
+    
+    Cluster_streams_norm = Cluster_streams_norm./ Roi_Sub_mat;
+    Cluster_streams_norm((isnan(Cluster_streams_norm))) = 0;
+    
+    Lesion_mats_norm = Lesion_mats_norm./ Roi_Sub_mat;
+    Lesion_mats_norm((isnan(Lesion_mats_norm))) = 0;
+    
+    
+    %%%%%%
+    % Computing Graph theory measures
+    %%%%%%
+    
+    % ORIGINAL connectivity matrices
+    %initialising matrices for several measures of graph theory
+    degree = zeros(90,npart);
+    Efficiency_scores = zeros(npart,1);
+    clustering_coef = zeros(90,npart);
+
+    %actual computation
+    for ii = 1:npart %over subjects
+        M3 = Raw_streams_norm(:,:,ii);
+        degree(:,ii) = sum(M3,2); %compute degree of connectivity (weighted)  HOW IS IT WEIGHTED
+        Efficiency_scores(ii,1) = efficiency_wei(M3);
+        clustering_coef(:,ii) = clustering_coef_wu(M3);
+    end
+    disp('Measures original computed')
+    
+    % Virtual LESION connectivity matrices
+    %initialising matrices for several measures of graph theory
+    degree_les = zeros(90,npart);
+    Efficiency_scores_les = zeros(npart,1);
+    clustering_coef_les = zeros(90,npart);
+    %actual computation
+    for ii = 1:npart %over subjects
+        M3=Lesion_mats_norm(:,:,ii);
+        degree_les(:,ii) = sum(M3,2); %compute degree of connectivity (weighted)  HOW IS IT WEIGHTED
+        Efficiency_scores_les(ii,1) = efficiency_wei(M3);
+        clustering_coef_les(:,ii) = clustering_coef_wu(M3);
+    end
+    disp('Measures lesioned computed')
+    %Efficiency_scores_perm = median(this_perc_perm_eff);
+    %Investigating the effect of the original lesion on efficiency,
+    %clustering coefficients and degree loss
+    Eff_change = Efficiency_scores-Efficiency_scores_les;
+    Perc_Eff_Change = Eff_change./ Efficiency_scores;
+    clust_coef_change = clustering_coef-clustering_coef_les;
+    degree_change = degree - degree_les;
+    degree_change_prop = degree_change./degree;
+    
+    % does degree of a node relate positively to how much this node loses
+    % proportionally?
+    HDI = zeros(npart,1);
+    for i = 1:npart
+        k_raw = degree(i,:);
+        delta = degree_change_prop(i,:);
+        b = polyfit(zscore(k_raw),delta,1);
+        HDI(i,1) = b(1);
+    end
+    HDI_dens(:,perc) = HDI(:,1);
+    %{
+    % Does the virtual lesions significantly reduce efficiency?
+    [~,p,~,stats] = ttest2(Efficiency_scores,Efficiency_scores_les);
+    Or_Les_eff(1,perc) = p;
+    Or_Les_eff(2,perc) = stats.tstat;
+    
+    [~,p,~,stats] = ttest2(mean(clustering_coef,1),mean(clustering_coef_les,1));
+    Or_Les_eff(3,perc) = p;
+    Or_Les_eff(4,perc) = stats.tstat;
+    %
+    % which node's clustering coefficient is significantly reduced by lesion
+    clust_pvals_curr = zeros(90,1);
+    for ii = 1:size(clustering_coef,1)
+        [~,p,~,stats] = ttest2(clustering_coef(ii,:),clustering_coef_les(ii,:));
+        clust_pvals_curr(ii,1) = p;
+    end
+    [h,crit_p] = fdr_bh(clust_pvals_curr,0.05,'pdep','yes');% fdr correction
+    FDR_singif_clustCoef(:,perc) = h;
+    %}
+    
+    %comparing original values to the permuted
+    
+    %loading the permutations
+    perm_dir_dens = [perm_dir num2str(perc*10) '.mat'];
+    tmp_Perm = load(perm_dir_dens);
+    perm_str = tmp_Perm.perc_perm_str;
+    
+    this_perc_perm_eff = perm_str.eff;
+    this_perc_perm_clust = perm_str.clust;
+    this_perc_perm_deg = perm_str.deg;
+    
+    Eff_change_perm = Efficiency_scores - this_perc_perm_eff'; % computing distance between original efficiency and efficiency related to the permuted lesions
+    pvals = sum(Eff_change_perm >= Eff_change,2)/10000;
+    
+    Max_perm_eff = max(this_perc_perm_eff);
+    Eff_acr_dens_for_plot(:,perc,1) = Efficiency_scores;
+    Eff_acr_dens_for_plot(:,perc,2) = Efficiency_scores_les;
+    Eff_acr_dens_for_plot(:,perc,3) = Max_perm_eff';
+    
+    
+    this_perc_perm_clust = permute(this_perc_perm_clust,[1 3 2]); %changing permutation matrix dimentions so it fits with the dimention of the original data
+    clust_coef_change_perms = clustering_coef - this_perc_perm_clust;
+    pvals_clust_coef_change_more = sum(clust_coef_change_perms>=clust_coef_change,3)/10000;
+    pvals_clust_coef_change_less = sum(clust_coef_change_perms<=clust_coef_change,3)/10000;
+    
+    this_perc_perm_deg = permute(this_perc_perm_deg,[1 3 2]);%changing permutation matrix dimentions so it fits with the dimention of the original data
+    degree_dep_perm = degree -this_perc_perm_deg;
+    pvals_deg_dep_change_more = sum(degree_dep_perm>=degree_change,3)/10000;
+    pvals_deg_dep_change_less = sum(degree_dep_perm<=degree_change,3)/10000;
+    
+    Eff_acr_dens(:,perc) = pvals;
+    Clust_Coef_acr_dens(:,:,perc,1) = pvals_clust_coef_change_more';
+    Deg_dep_acr_dens(:,:,perc,1) = pvals_deg_dep_change_more';
+    Clust_Coef_acr_dens(:,:,perc,2) = pvals_clust_coef_change_less';
+    Deg_dep_acr_dens(:,:,perc,2) = pvals_deg_dep_change_less';
+    
+    disp('DENSITY COMPLETE')
+    disp(perc)
+end
+%%
+%%  %%% STEP 3 %%% Investigating cluster impact across different connectivity matrix densities
+% Choose data to work with 0 - TempSeq 1 - AudMemDem
+dat_choice = 1;
+if dat_choice == 0
+    matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/MatStr.mat';
+    perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/Streamline_Permuts/perm_str_';
+else
+    matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/MatStr.mat';
+    perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/Streamline_Permuts/perm_str_';
+end
+tmp_Mat = load(matstr_dir);
+%tmp_Perm = load(perm_dir);
+mat_struct = tmp_Mat.mat_struct;
+%perm_str = tmp_Perm.perm_str;
+
+Raw_streams = mat_struct.Raw_streams; % 3D matrix holding 90 by 90 connnectivity matrix for all participants
+Cluster_streams = mat_struct.Cluster_streams; % 3D matrix holding 90 by 90 connnectivity matrix ONLY streamlines going through the WM CLUSTER
+Lesion_mats = mat_struct.Lesion_mats; % 3D matrix holding my virtual lesion
+Prop_Mats = mat_struct.Prop_Mats; % 3D matrix holding per-edge proportion of streamlines going through the cluster
+ROI_sizes = mat_struct.ROI_sizes;
+order = [1:2:90 90:-2:2];
+npart = size(Raw_streams,3);
+
+
+addpath('/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory/BCT/2019_03_03_BCT'); %add BCT functions to path (FFM)
+tmp_Thresh = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/CombThreshmat.mat');
+Thresholding_Mat = tmp_Thresh.Comb;
+npart = size(Raw_streams,3);
+dens_tested = 5;
+Eff_acr_dens_1 = zeros(npart,dens_tested); % storing efficiency drop significance across densities across perticipants
+Eff_acr_dens_for_plot_1 = zeros(npart,dens_tested,3);
+Clust_Coef_acr_dens_1 = zeros(npart,90,dens_tested,2); % storing clustering coefficient drop significance for 90 AAL parcels across densities across perticipants
+Deg_dep_acr_dens_1 = zeros(npart,90,dens_tested,2); % storing degree drop significance for 90 AAL parcels across densities across perticipants
+HDI_dens_1 = zeros (npart,dens_tested); % storing slope between node degree and node loss for 90 AAL parcels across densities across perticipants 
+Or_Les_eff = zeros (4,dens_tested); % storing original ttest results for Efficiency drop and clustering coefficient drop
+FDR_singif_clustCoef = zeros(90,dens_tested);
+order = [1:2:90 90:-2:2];
+
+
+for perc = 1:5%9
+    my_prctile = perc*10;
+    Density_thresh = my_prctile;
+    
+    % computing sd and mean, since consistency is measured as sd/mean. 
+    sd_mat = std(Thresholding_Mat,0,3);
+    mean_mat = mean(Thresholding_Mat,3);
+    Consistecy_mat = sd_mat./mean_mat;
+    
+    % prunning the connectivity matrix, selecting only the top _x_ percentile
+    % of most consistent edges.
+    Edge_Mask = Consistecy_mat < prctile(Consistecy_mat(:),Density_thresh); % the smaller the value the higher the consistency, so we take values below the percentile
+    Edge_Mask = Edge_Mask(order,order); %reordering into left right matrix organisation
+    Edge_Mask_tri = Edge_Mask&~tril(true(size(Edge_Mask)),-1); % inspect the mast visually to be certain it includes only the upper triangle
+    My_edge_ind = find(Edge_Mask_tri); % Creating the vector with indices of my "valid" edges at selected density
+    
+    % setting up Participant ROI sizes for normalisation
+    Roi_Sub_mat = zeros(90,90,npart);
+    for participant = 1:npart
+        Roi_subj = ROI_sizes(:,participant);
+        Roi_subj = Roi_subj+Roi_subj.'; % takes a vector and converts it into a matrix where values a,b is sum of a+b. Exactly what we need to normalise the connections
+        Roi_Sub_mat (:,:,participant) = Roi_subj;
+    end
+    
+    %prunning my connectivity matrices
+    Raw_streams_norm = Raw_streams.* Edge_Mask;
+    Cluster_streams_norm = Cluster_streams.* Edge_Mask;
+    Lesion_mats_norm = Lesion_mats.* Edge_Mask;
+    
+    % normalising and getting rid of NaNs
+    Raw_streams_norm = Raw_streams_norm./ Roi_Sub_mat;
+    Raw_streams_norm((isnan(Raw_streams_norm))) = 0;
+    
+    Cluster_streams_norm = Cluster_streams_norm./ Roi_Sub_mat;
+    Cluster_streams_norm((isnan(Cluster_streams_norm))) = 0;
+    
+    Lesion_mats_norm = Lesion_mats_norm./ Roi_Sub_mat;
+    Lesion_mats_norm((isnan(Lesion_mats_norm))) = 0;
+    
+    
+    %%%%%%
+    % Computing Graph theory measures
+    %%%%%%
+    
+    % ORIGINAL connectivity matrices
+    %initialising matrices for several measures of graph theory
+    degree = zeros(90,npart);
+    Efficiency_scores = zeros(npart,1);
+    clustering_coef = zeros(90,npart);
+
+    %actual computation
+    for ii = 1:npart %over subjects
+        M3 = Raw_streams_norm(:,:,ii);
+        degree(:,ii) = sum(M3,2); %compute degree of connectivity (weighted)  HOW IS IT WEIGHTED
+        Efficiency_scores(ii,1) = efficiency_wei(M3);
+        clustering_coef(:,ii) = clustering_coef_wu(M3);
+    end
+    disp('Measures original computed')
+    
+    % Virtual LESION connectivity matrices
+    %initialising matrices for several measures of graph theory
+    degree_les = zeros(90,npart);
+    Efficiency_scores_les = zeros(npart,1);
+    clustering_coef_les = zeros(90,npart);
+    %actual computation
+    for ii = 1:npart %over subjects
+        M3=Lesion_mats_norm(:,:,ii);
+        degree_les(:,ii) = sum(M3,2); %compute degree of connectivity (weighted)  HOW IS IT WEIGHTED
+        Efficiency_scores_les(ii,1) = efficiency_wei(M3);
+        clustering_coef_les(:,ii) = clustering_coef_wu(M3);
+    end
+    disp('Measures lesioned computed')
+    %Efficiency_scores_perm = median(this_perc_perm_eff);
+    %Investigating the effect of the original lesion on efficiency,
+    %clustering coefficients and degree loss
+    Eff_change = Efficiency_scores-Efficiency_scores_les;
+    Perc_Eff_Change = Eff_change./ Efficiency_scores;
+    clust_coef_change = clustering_coef-clustering_coef_les;
+    degree_change = degree - degree_les;
+    degree_change_prop = degree_change./degree;
+    
+    % does degree of a node relate positively to how much this node loses
+    % proportionally?
+    HDI = zeros(npart,1);
+    for i = 1:npart
+        k_raw = degree(i,:);
+        delta = degree_change_prop(i,:);
+        b = polyfit(zscore(k_raw),delta,1);
+        HDI(i,1) = b(1);
+    end
+    HDI_dens_1(:,perc) = HDI(:,1);
+    %{
+    % Does the virtual lesions significantly reduce efficiency?
+    [~,p,~,stats] = ttest2(Efficiency_scores,Efficiency_scores_les);
+    Or_Les_eff(1,perc) = p;
+    Or_Les_eff(2,perc) = stats.tstat;
+    
+    [~,p,~,stats] = ttest2(mean(clustering_coef,1),mean(clustering_coef_les,1));
+    Or_Les_eff(3,perc) = p;
+    Or_Les_eff(4,perc) = stats.tstat;
+    %
+    % which node's clustering coefficient is significantly reduced by lesion
+    clust_pvals_curr = zeros(90,1);
+    for ii = 1:size(clustering_coef,1)
+        [~,p,~,stats] = ttest2(clustering_coef(ii,:),clustering_coef_les(ii,:));
+        clust_pvals_curr(ii,1) = p;
+    end
+    [h,crit_p] = fdr_bh(clust_pvals_curr,0.05,'pdep','yes');% fdr correction
+    FDR_singif_clustCoef(:,perc) = h;
+    %}
+    
+    %comparing original values to the permuted
+    
+    %loading the permutations
+    perm_dir_dens = [perm_dir num2str(perc*10) '.mat'];
+    tmp_Perm = load(perm_dir_dens);
+    perm_str = tmp_Perm.perc_perm_str;
+    
+    this_perc_perm_eff = perm_str.eff;
+    this_perc_perm_clust = perm_str.clust;
+    this_perc_perm_deg = perm_str.deg;
+    
+    Eff_change_perm = Efficiency_scores - this_perc_perm_eff'; % computing distance between original efficiency and efficiency related to the permuted lesions
+    pvals = sum(Eff_change_perm >= Eff_change,2)/10000;
+    
+    Max_perm_eff = max(this_perc_perm_eff);
+    Eff_acr_dens_for_plot_1(:,perc,1) = Efficiency_scores;
+    Eff_acr_dens_for_plot_1(:,perc,2) = Efficiency_scores_les;
+    Eff_acr_dens_for_plot_1(:,perc,3) = Max_perm_eff';
+    
+    this_perc_perm_clust = permute(this_perc_perm_clust,[1 3 2]); %changing permutation matrix dimentions so it fits with the dimention of the original data
+    clust_coef_change_perms = clustering_coef - this_perc_perm_clust;
+    pvals_clust_coef_change_more = sum(clust_coef_change_perms>=clust_coef_change,3)/10000;
+    pvals_clust_coef_change_less = sum(clust_coef_change_perms<=clust_coef_change,3)/10000;
+    
+    this_perc_perm_deg = permute(this_perc_perm_deg,[1 3 2]);%changing permutation matrix dimentions so it fits with the dimention of the original data
+    degree_dep_perm = degree -this_perc_perm_deg;
+    pvals_deg_dep_change_more = sum(degree_dep_perm>=degree_change,3)/10000;
+    pvals_deg_dep_change_less = sum(degree_dep_perm<=degree_change,3)/10000;
+    
+    Eff_acr_dens_1(:,perc) = pvals;
+    Clust_Coef_acr_dens_1(:,:,perc,1) = pvals_clust_coef_change_more';
+    Deg_dep_acr_dens_1(:,:,perc,1) = pvals_deg_dep_change_more';
+    Clust_Coef_acr_dens_1(:,:,perc,2) = pvals_clust_coef_change_less';
+    Deg_dep_acr_dens_1(:,:,perc,2) = pvals_deg_dep_change_less';
+    
+    
+    disp('DENSITY COMPLETE')
+    disp(perc)
+end
+%% strong HDI_across densities combined
+HDI_total = [HDI_dens;HDI_dens_1];
+save('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Results/HDI/HDI_cross_dens_total.mat', 'HDI_total')
+Eff_total = [Eff_acr_dens;Eff_acr_dens_1];
+save('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Results/Efficiency/Eff_cross_dens_total.mat', 'Eff_total')
+Eff_total_plot = cat(1,Eff_acr_dens_for_plot,Eff_acr_dens_for_plot_1);
+save('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Results/Efficiency/Eff_cross_dens_total_plot.mat', 'Eff_total_plot')
+%%
+MNI_RC = zeros(90,3);
+for ii = 1:90 %over AAL ROIs
+    [ ROI_mni, ~ ] = osl_mnimask2mnicoords(['/scratch7/MINDLAB2017_MEG-LearningBach/DTI_Portis/Templates/AAL_2mm_90ROIs/' num2str(ii) '.nii.gz']);
+    MNI_RC(ii,:) = mean(ROI_mni,1); %x
+    disp(ii)
+end
+order = [1:2:90 90:-2:2];
+%%
+value_switch = 0; %0 - degree change, 1 - clustering coef change
+sig_acr_dens = zeros(90,2,5);
+for perc = 1:5
+    pvals_clust_coef_change_more_1 = Clust_Coef_acr_dens_1(:,:,perc,1);
+    pvals_deg_dep_change_more_1 = Deg_dep_acr_dens_1(:,:,perc,1);
+    pvals_clust_coef_change_more = Clust_Coef_acr_dens(:,:,perc,1);
+    pvals_deg_dep_change_more = Deg_dep_acr_dens(:,:,perc,1);
+    pvals_clust_coef_change_more = [pvals_clust_coef_change_more_1', pvals_clust_coef_change_more'];
+    pvals_deg_dep_change_more = [pvals_deg_dep_change_more_1', pvals_deg_dep_change_more'];
+    
+    pvals_clust_coef_change_less_1 = Clust_Coef_acr_dens_1(:,:,perc,2);
+    pvals_deg_dep_change_less_1 = Deg_dep_acr_dens_1(:,:,perc,2);
+    pvals_clust_coef_change_less = Clust_Coef_acr_dens(:,:,perc,2);
+    pvals_deg_dep_change_less = Deg_dep_acr_dens(:,:,perc,2);
+    pvals_clust_coef_change_less = [pvals_clust_coef_change_less_1', pvals_clust_coef_change_less'];
+    pvals_deg_dep_change_less = [pvals_deg_dep_change_less_1', pvals_deg_dep_change_less'];
+    if value_switch == 0
+        P_more = pvals_deg_dep_change_more<0.05;
+        P_less = pvals_deg_dep_change_less<0.05;
+    else
+        P_more = pvals_clust_coef_change_more<0.05;
+        P_less = pvals_clust_coef_change_less<0.05;
+    end
+    
+    Eff_present = sum(P_more|P_less,2);
+    
+    more_count = sum(P_more,2);
+    
+    p0 = 0.5;
+    pval_bin = ones(size(more_count));
+    
+    idx = Eff_present>0;
+    k = more_count(idx);
+    n = Eff_present(idx);
+    
+    pval_bin(idx) = 2.*min(binocdf(k,n,p0), 1-binocdf(k-1,n,p0));
+    pval_bin = min(pval_bin,1);
+    [h,crit_p] = fdr_bh(pval_bin,0.01,'pdep','yes');
+    
+    phat = (more_count./max(Eff_present,1));
+    more_loss_signif = h&phat>0.5;
+    less_loss_signif = h&phat<0.5;
+    sig_acr_dens(:,1,perc) = more_loss_signif
+    sig_acr_dens(:,2,perc) = less_loss_signif
+    %{
+    col_dot = 'r';
+    
+    centroids_toplot = less_loss_signif;
+    centroids_toplot = order(centroids_toplot);
+    openfig('/projects/MINDLAB2017_MEG-LearningBach/scripts/Leonardo_FunctionsPhD/External/BrainTemplate_GT.fig')
+    hold on
+    for parc = 1:length(centroids_toplot)
+        curr_parc = centroids_toplot(parc);
+        plot3(MNI_RC(curr_parc, 1), MNI_RC(curr_parc, 2), MNI_RC(curr_parc, 3), ['.'], 'Color', col_dot, 'MarkerSize', 10); %centroid of ROI ii
+        hold on
+    end
+    rotate3d on; axis off; axis vis3d; axis equal
+    
+    col_dot = 'b';
+    
+    centroids_toplot = more_loss_signif;
+    centroids_toplot = order(centroids_toplot);
+    openfig('/projects/MINDLAB2017_MEG-LearningBach/scripts/Leonardo_FunctionsPhD/External/BrainTemplate_GT.fig')
+    hold on
+    for parc = 1:length(centroids_toplot)
+        curr_parc = centroids_toplot(parc);
+        plot3(MNI_RC(curr_parc, 1), MNI_RC(curr_parc, 2), MNI_RC(curr_parc, 3), ['.'], 'Color', col_dot, 'MarkerSize', 10); %centroid of ROI ii
+        hold on
+    end
+    rotate3d on; axis off; axis vis3d; axis equal
+    %}
+    
+end
+
+%%
+figure
+imagesc(squeeze(sig_acr_dens(:,1,:)))
+figure
+imagesc(squeeze(sig_acr_dens(:,2,:)))
+
+
+%%
+tmpAal = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/AAL_Templates/AAL_labels.mat')
+aallab = tmpAal.lab;
+aallab = cellstr(aallab);
+Area_labels = aallab;
+%%
+aaltab = aallab;
+Area_labels = table2array(aaltab);
+%%
+Area_labels = extractAfter(string(Area_labels),'. ');
+%%
+signif_areas = [];
+for perc = 1:5
+    dens = perc;
+    pvals_clust_coef_change_more_1 = Clust_Coef_acr_dens_1(:,:,perc,1);
+    pvals_deg_dep_change_more_1 = Deg_dep_acr_dens_1(:,:,perc,1);
+    pvals_clust_coef_change_more = Clust_Coef_acr_dens(:,:,perc,1);
+    pvals_deg_dep_change_more = Deg_dep_acr_dens(:,:,perc,1);
+    pvals_clust_coef_change_more = [pvals_clust_coef_change_more_1', pvals_clust_coef_change_more'];
+    pvals_deg_dep_change_more = [pvals_deg_dep_change_more_1', pvals_deg_dep_change_more'];
+    
+    pvals_clust_coef_change_less_1 = Clust_Coef_acr_dens_1(:,:,perc,2);
+    pvals_deg_dep_change_less_1 = Deg_dep_acr_dens_1(:,:,perc,2);
+    pvals_clust_coef_change_less = Clust_Coef_acr_dens(:,:,perc,2);
+    pvals_deg_dep_change_less = Deg_dep_acr_dens(:,:,perc,2);
+    pvals_clust_coef_change_less = [pvals_clust_coef_change_less_1', pvals_clust_coef_change_less'];
+    pvals_deg_dep_change_less = [pvals_deg_dep_change_less_1', pvals_deg_dep_change_less'];
+    value_switch = 0;
+    %first record degree
+    if value_switch == 0
+        P_more = pvals_deg_dep_change_more<0.05;
+        P_less = pvals_deg_dep_change_less<0.05;
+    else
+        P_more = pvals_clust_coef_change_more<0.05;
+        P_less = pvals_clust_coef_change_less<0.05;
+    end
+    
+    Eff_present = sum(P_more|P_less,2);
+    
+    more_count = sum(P_more,2);
+    
+    p0 = 0.5;
+    pval_bin = ones(size(more_count));
+    
+    idx = Eff_present>0;
+    k = more_count(idx);
+    n = Eff_present(idx);
+    
+    pval_bin(idx) = 2.*min(binocdf(k,n,p0), 1-binocdf(k-1,n,p0));
+    pval_bin = min(pval_bin,1);
+    [h,crit_p] = fdr_bh(pval_bin,0.01,'pdep','yes');
+    
+    phat = (more_count./max(Eff_present,1));
+    more_loss_signif = h&phat>0.5;
+    less_loss_signif = h&phat<0.5;
+    
+    %starting with more loss
+    centroids_toplot = order(more_loss_signif);
+    
+    sect_nan = ['Density ' num2str(dens*10) '% Degree drop above chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_nan);
+    this_areas(2:length(centroids_toplot)+1,1) = Area_labels(centroids_toplot);
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:));
+    signif_areas = cat(1,signif_areas,this_areas);
+    
+    %And adding less loss
+    centroids_toplot = order(less_loss_signif);
+    
+    sect_nan = ['Density ' num2str(dens*10) '% Degree drop below chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_nan);
+    this_areas(2:length(centroids_toplot)+1,1) = Area_labels(centroids_toplot);
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:));
+    signif_areas = cat(1,signif_areas,this_areas);
+    
+    
+    value_switch = 1;
+    %and record clustering coefficient
+    if value_switch == 0
+        P_more = pvals_deg_dep_change_more<0.05;
+        P_less = pvals_deg_dep_change_less<0.05;
+    else
+        P_more = pvals_clust_coef_change_more<0.05;
+        P_less = pvals_clust_coef_change_less<0.05;
+    end
+    
+    Eff_present = sum(P_more|P_less,2);
+    
+    more_count = sum(P_more,2);
+    
+    p0 = 0.5;
+    pval_bin = ones(size(more_count));
+    
+    idx = Eff_present>0;
+    k = more_count(idx);
+    n = Eff_present(idx);
+    
+    pval_bin(idx) = 2.*min(binocdf(k,n,p0), 1-binocdf(k-1,n,p0));
+    pval_bin = min(pval_bin,1);
+    [h,crit_p] = fdr_bh(pval_bin,0.01,'pdep','yes');
+    
+    phat = (more_count./max(Eff_present,1));
+    more_loss_signif = h&phat>0.5;
+    less_loss_signif = h&phat<0.5;
+    
+    %starting with more loss
+    centroids_toplot = order(more_loss_signif);
+    
+    sect_nan = ['Density ' num2str(dens*10) '% Clustering coefficient drop above chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_nan);
+    this_areas(2:length(centroids_toplot)+1,1) = Area_labels(centroids_toplot);
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:));
+    signif_areas = cat(1,signif_areas,this_areas);
+    
+    %And adding less loss
+    centroids_toplot = order(less_loss_signif);
+    
+    sect_nan = ['Density ' num2str(dens*10) '% Clustering coefficient drop below chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_nan);
+    this_areas(2:length(centroids_toplot)+1,1) = Area_labels(centroids_toplot);
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:));
+    signif_areas = cat(1,signif_areas,this_areas);
+    disp(['Finished making dens_' num2str(perc)])
+end
+save('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Results/Nodewise/Signif_table.mat', 'signif_areas')
+%%
+signif_areas = [];
+% saving significant areas
+
+for dens = 1:5
+    a = Deg_dep_acr_dens(:,:,dens);
+    fdr_signif_mat = zeros(size(a));
+    for i = 1:size(a,1)
+        curr_pvals = a(i,:);
+        [h,crit_p] = fdr_bh(curr_pvals,0.05,'pdep','yes');% fdr correction
+        fdr_signif_mat(i,:) = h;%curr_pvals<0.05;
+    end
+    b = mean(fdr_signif_mat,1);
+    centroids_toplot = find(b>0.9);
+    centroids_toplot = order(centroids_toplot);
+    sect_man = ['Density ' num2str(dens*10) '% Degree drop above chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_man);
+    this_areas(2:length(centroids_toplot)+1,1) = cellstr(Area_labels(centroids_toplot));
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:))
+    signif_areas = cat(1,signif_areas,this_areas)
+    
+    
+    a = 1-a;
+    fdr_signif_mat = zeros(size(a));
+    for i = 1:size(a,1)
+        curr_pvals = a(i,:);
+        [h,crit_p] = fdr_bh(curr_pvals,0.05,'pdep','yes');% fdr correction
+        fdr_signif_mat(i,:) = h;%curr_pvals<0.05;
+    end
+    b = mean(fdr_signif_mat,1);
+    centroids_toplot = find(b>0.9);
+    centroids_toplot = order(centroids_toplot);
+    sect_man = ['Density ' num2str(dens*10) '% Degree drop below chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_man);
+    this_areas(2:length(centroids_toplot)+1,1) = cellstr(Area_labels(centroids_toplot));
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:));
+    signif_areas = cat(1,signif_areas,this_areas);
+    
+    a = Clust_Coef_acr_dens(:,:,dens);
+    fdr_signif_mat = zeros(size(a));
+    for i = 1:size(a,1)
+        curr_pvals = a(i,:);
+        [h,crit_p] = fdr_bh(curr_pvals,0.05,'pdep','yes');% fdr correction
+        fdr_signif_mat(i,:) = h;%curr_pvals<0.05;
+    end
+    b = mean(fdr_signif_mat,1);
+    centroids_toplot = find(b>0.7);
+    centroids_toplot = order(centroids_toplot);
+    
+    sect_man = ['Density ' num2str(dens*10) '% Clustering drop above chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_man);
+    this_areas(2:length(centroids_toplot)+1,1) = cellstr(Area_labels(centroids_toplot));
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:))
+    signif_areas = cat(1,signif_areas,this_areas)
+    
+    
+    a = 1-a;
+    fdr_signif_mat = zeros(size(a));
+    for i = 1:size(a,1)
+        curr_pvals = a(i,:);
+        [h,crit_p] = fdr_bh(curr_pvals,0.05,'pdep','yes');% fdr correction
+        fdr_signif_mat(i,:) = h;%curr_pvals<0.05;
+    end
+    b = mean(fdr_signif_mat,1);
+    centroids_toplot = find(b>0.9);
+    centroids_toplot = order(centroids_toplot);
+    sect_man = ['Density ' num2str(dens*10) '% Clustering drop below chance'];
+    this_areas = cell(length(centroids_toplot)+2,4);
+    this_areas(1,1) = cellstr(sect_man);
+    this_areas(2:length(centroids_toplot)+1,1) = cellstr(Area_labels(centroids_toplot));
+    
+    this_areas(2:length(centroids_toplot)+1,2:4) = num2cell(MNI_RC(centroids_toplot,:));
+    signif_areas = cat(1,signif_areas,this_areas);
+    disp(dens)
+end
+%%
+T = cell2table(signif_areas);
+%%
+
+writetable(array2table(HDI_dens),'HDIdens.csv');
+%%  %%% STEP 4 %%% Visualising statistical significance
+
+% Efficiency change significance
+figure
+imagesc(Eff_acr_dens)
+colorbar
+
+% Clustering coefficient change significance
+figure
+for perc = 1:9
+    subplot(3,3,perc)
+    imagesc(Clust_Coef_acr_dens(:,:,perc))
+    title(sprintf('Clust Coef %d', perc));
+    colorbar
+end
+% Degree loss significance
+figure
+for perc = 1:9
+    subplot(3,3,perc)
+    imagesc(Deg_dep_acr_dens(:,:,perc))
+    title(sprintf('Degr loss %d', perc));
+    colorbar
+end
+% Clustering coefficient change significance FDR
+figure
+imagesc(FDR_singif_clustCoef)
+
+%% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%  %%% STEP 5 %%% Rich-club nodes and ageing cluster
+%%
+%Y/O separation
+    participant_info = readtable('/aux/MINDLAB2021_MEG-TempSeqAges/Nikita/TSA2021_Nikita.xlsx'); % loading behavioural data
+    
+    %Converting 0 no NaN
+    participant_info.WMCombined(participant_info.WMCombined==0)=NaN;
+    
+    ValidRows = ~isnan(participant_info.WMCombined); %IF you want to test for WM relations afterwards
+    %ValidRows = participant_info.Subject~=1;
+    Valid_dat = participant_info(:,:); %defining a dataset with participants that have all the behavioural tests
+    Young = Valid_dat.Subject(Valid_dat.Age < 27);
+    Old = Valid_dat.Subject(Valid_dat.Age > 55);
+    Y_Selection = ismember(Valid_dat.Subject,Young);
+    O_Selection = ismember(Valid_dat.Subject,Old);
+
+    %Y/O separation
+    participant_info = readtable('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/tbss/Descript_Dat/Participant_categories_AuditMemDement_ages.xlsx'); % loading behavioural data
+
+    path_out='/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/'; %set the path to the folder where you will save your converted data
+    path5=dir([path_out '0*']);
+    DTI = zeros(length(participant_info.Group),1);
+    for gg=1:length(path5)
+        path6=dir([path5(gg).folder '/' path5(gg).name '/20*']); %loop across each subject and get the content of each subject's folder
+        if ~isempty(path6)
+            DTI(gg,1) = 1;
+        end
+    end
+    participant_info.DTI = DTI;
+    Valid_participant_info  = participant_info(participant_info.DTI==1,:);
+    Y_Selection1 = ismember(Valid_participant_info.Group,{'A'});
+    Y_sel_tot = [Y_Selection;Y_Selection1];
+%% first, combine permutations into a single structure
+my_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/TempSeq/permuts_Rich_club/';
+dens_range = [1 5 10 20 30 40 50 60 70 80];
+nperm = 10000;
+batch_size = 500;
+for perc = 1:length(dens_range)
+    RC_perm_comb = zeros(nperm, 90, size(Raw_streams,3));
+    Density_thresh = dens_range(perc);
+    for iter = 1:20
+        curr_perm_dir = [my_dir 'density_' num2str(Density_thresh) '/permut_richclub' num2str(iter) '.mat'];
+        tmp_RC_perm = load(curr_perm_dir);
+        this_RC_perm = tmp_RC_perm.perm_mat;
+        iter_start = (iter-1)*batch_size +1;
+        iter_end = iter*batch_size;
+        RC_perm_comb(iter_start:iter_end,:,:) = this_RC_perm;
+        disp(iter)
+    end
+    output_dir = [my_dir 'RC_comb_' num2str(Density_thresh) '.mat'];
+    save(output_dir, 'RC_perm_comb')
+end
+%%
+% Choose data to work with 0 - TempSeq 1 - AudMemDem
+addpath('/scratch7/MINDLAB2021_MEG-TempSeqAges/Nikita/DTI/Graph_Theory/BCT/2019_03_03_BCT'); %add BCT functions to path (FFM)
+
+
+outdir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/';
+dat_choice = 1;
+if dat_choice == 0
+    matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/MatStr.mat';
+    perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/TempSeq/permuts_Rich_club/RC_comb_';
+else
+    matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/MatStr.mat';
+    perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/RC_comb_';
+end
+tmp_Mat = load(matstr_dir);
+mat_struct = tmp_Mat.mat_struct;
+
+tmp_Thresh = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/CombThreshmat.mat');
+Thresholding_Mat = tmp_Thresh.Comb;
+
+Raw_streams = mat_struct.Raw_streams; % 3D matrix holding 90 by 90 connnectivity matrix for all participants
+Cluster_streams = mat_struct.Cluster_streams; % 3D matrix holding 90 by 90 connnectivity matrix ONLY streamlines going through the WM CLUSTER 
+Lesion_mats = mat_struct.Lesion_mats; % 3D matrix holding my virtual lesion
+Prop_Mats = mat_struct.Prop_Mats; % 3D matrix holding per-edge proportion of streamlines going through the cluster
+ROI_sizes = mat_struct.ROI_sizes;
+dens_range = [1 5 10 20 30 40 50 60 70 80];
+RC_origpval = zeros(3,length(dens_range),2);
+npart = size(Raw_streams,3);
+order = [1:2:90 90:-2:2];
+RC_TreshVals = [1 1 1 1 1 2 7 8 12 6];
+
+
+%
+for perc = 5%1:length(dens_range)
+    Density_thresh = dens_range(perc);
+    
+    sd_mat = std(Thresholding_Mat,0,3);
+    mean_mat = mean(Thresholding_Mat,3);
+    Consistecy_mat = sd_mat./mean_mat;
+    
+    Edge_Mask = Consistecy_mat < prctile(Consistecy_mat(:),Density_thresh);
+    Edge_Mask = Edge_Mask(order,order);
+    Edge_Mask_tri = Edge_Mask&~tril(true(size(Edge_Mask)),-1);
+    My_edge_ind = find(Edge_Mask_tri);
+    
+    
+    %starting with dataset TempSeq
+    dat_choice = 0;
+    if dat_choice == 0
+        matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/MatStr.mat';
+        perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/TempSeq/permuts_Rich_club/RC_comb_';
+    else
+        matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/MatStr.mat';
+        perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/RC_comb_';
+    end
+    
+    
+    tmp_Mat = load(matstr_dir);
+    mat_struct = tmp_Mat.mat_struct;
+    
+    tmp_Thresh = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/CombThreshmat.mat');
+    Thresholding_Mat = tmp_Thresh.Comb;
+    
+    Raw_streams = mat_struct.Raw_streams; % 3D matrix holding 90 by 90 connnectivity matrix for all participants
+    Cluster_streams = mat_struct.Cluster_streams; % 3D matrix holding 90 by 90 connnectivity matrix ONLY streamlines going through the WM CLUSTER
+    Lesion_mats = mat_struct.Lesion_mats; % 3D matrix holding my virtual lesion
+    Prop_Mats = mat_struct.Prop_Mats; % 3D matrix holding per-edge proportion of streamlines going through the cluster
+    ROI_sizes = mat_struct.ROI_sizes;
+    RC_origpval = zeros(3,8,2);
+    npart = size(Raw_streams,3);
+    
+    Roi_Sub_mat = zeros(90,90,npart);
+    for participant = 1:npart
+        Roi_subj = ROI_sizes(:,participant);
+        Roi_subj = Roi_subj+Roi_subj.';
+        Roi_subj(~Edge_Mask) = 0;
+        Roi_Sub_mat (:,:,participant) = Roi_subj;
+    end
+    
+    Raw_streams_norm = Raw_streams.* Edge_Mask;
+    Cluster_streams_norm = Cluster_streams.* Edge_Mask;
+    Lesion_mats_norm = Lesion_mats.* Edge_Mask;
+    
+    Raw_streams_norm = Raw_streams_norm./ Roi_Sub_mat;
+    Raw_streams_norm(find(isnan(Raw_streams_norm))) = 0;
+    Cluster_streams_norm = Cluster_streams_norm./ Roi_Sub_mat;
+    Cluster_streams_norm(find(isnan(Cluster_streams_norm))) = 0;
+    Lesion_mats_norm = Lesion_mats_norm./ Roi_Sub_mat;
+    Lesion_mats_norm(find(isnan(Lesion_mats_norm))) = 0;
+    
+    load([perm_dir num2str(Density_thresh)], 'RC_perm_comb');
+    RC_Perms = RC_perm_comb;
+    % setting up permutation matrices
+    Raw_streams_norm_Dt1 = Raw_streams_norm;
+    Cluster_streams_norm_Dt1 = Cluster_streams_norm;
+    
+    
+    
+    
+    rich_club_norm_TempSeq = zeros(npart,90);
+    rich_club_pval_TempSeq = zeros(npart,90);
+    degree_bin_TempSeq = zeros(npart,90);
+    %actual computation
+    for ii = 1:npart %over subjects
+        M3 = Raw_streams_norm(:,:,ii);
+        
+        rich_club_thispart = rich_club_wu(M3);
+        rich_club_thispart(find(isnan(rich_club_thispart))) = 0;
+        this_subj_perm = RC_Perms(:,1:length(rich_club_thispart),ii);
+        this_subj_perm(find(isnan(this_subj_perm))) = 0;
+        RC_normal = rich_club_thispart./squeeze(mean(this_subj_perm,1));
+        rich_club_norm_TempSeq(ii,1:length(rich_club_thispart)) = RC_normal;
+        p = mean(this_subj_perm>rich_club_thispart,1);
+        sig = p<0.05&p>0;
+        rich_club_pval_TempSeq(ii,1:length(p)) = p;
+        degree_bin_TempSeq(ii,:)=degrees_und(M3>0);
+        %disp(ii)
+        %showing progressive subject ID
+    end
+    
+    %repeat for AudMemDem
+    dat_choice = 1;
+    if dat_choice == 0
+        matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/TempSeq/MatStr.mat';
+        perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/TempSeq/permuts_Rich_club/RC_comb_';
+    else
+        matstr_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/Comb_Thresh/AudMemDem/MatStr.mat';
+        perm_dir = '/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/RC_comb_';
+    end
+    
+    
+    tmp_Mat = load(matstr_dir);
+    mat_struct = tmp_Mat.mat_struct;
+    
+    tmp_Thresh = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/CombThreshmat.mat');
+    Thresholding_Mat = tmp_Thresh.Comb;
+    
+    Raw_streams = mat_struct.Raw_streams; % 3D matrix holding 90 by 90 connnectivity matrix for all participants
+    Cluster_streams = mat_struct.Cluster_streams; % 3D matrix holding 90 by 90 connnectivity matrix ONLY streamlines going through the WM CLUSTER
+    Lesion_mats = mat_struct.Lesion_mats; % 3D matrix holding my virtual lesion
+    Prop_Mats = mat_struct.Prop_Mats; % 3D matrix holding per-edge proportion of streamlines going through the cluster
+    ROI_sizes = mat_struct.ROI_sizes;
+    RC_origpval = zeros(3,8,2);
+    npart = size(Raw_streams,3);
+    
+    Roi_Sub_mat = zeros(90,90,npart);
+    for participant = 1:npart
+        Roi_subj = ROI_sizes(:,participant);
+        Roi_subj = Roi_subj+Roi_subj.';
+        Roi_subj(~Edge_Mask) = 0;
+        Roi_Sub_mat (:,:,participant) = Roi_subj;
+    end
+
+    Raw_streams_norm = Raw_streams.* Edge_Mask;
+    Cluster_streams_norm = Cluster_streams.* Edge_Mask;
+    Lesion_mats_norm = Lesion_mats.* Edge_Mask;
+    
+    Raw_streams_norm = Raw_streams_norm./ Roi_Sub_mat;
+    Raw_streams_norm(find(isnan(Raw_streams_norm))) = 0;
+    Cluster_streams_norm = Cluster_streams_norm./ Roi_Sub_mat;
+    Cluster_streams_norm(find(isnan(Cluster_streams_norm))) = 0;
+    Lesion_mats_norm = Lesion_mats_norm./ Roi_Sub_mat;
+    Lesion_mats_norm(find(isnan(Lesion_mats_norm))) = 0;
+    
+    load([perm_dir num2str(Density_thresh)], 'RC_perm_comb');
+    RC_Perms = RC_perm_comb;
+    % setting up permutation matrices
+    Raw_streams_norm_Dt2 = Raw_streams_norm;
+    Cluster_streams_norm_Dt2 = Cluster_streams_norm;
+    
+    
+    
+    rich_club_norm_AudMem = zeros(npart,90);
+    rich_club_pval_AudMem = zeros(npart,90);
+    degree_bin_AudMem = zeros(npart,90);
+    %actual computation
+    for ii = 1:npart %over subjects
+        M3 = Raw_streams_norm(:,:,ii);
+        
+        rich_club_thispart = rich_club_wu(M3);
+        rich_club_thispart(find(isnan(rich_club_thispart))) = 0;
+        this_subj_perm = RC_Perms(:,1:length(rich_club_thispart),ii);
+        this_subj_perm(find(isnan(this_subj_perm))) = 0;
+        RC_normal = rich_club_thispart./squeeze(mean(this_subj_perm,1));
+        rich_club_norm_AudMem(ii,1:length(rich_club_thispart)) = RC_normal;
+        p = mean(this_subj_perm>rich_club_thispart,1);
+        sig = p<0.05&p>0;
+        rich_club_pval_AudMem(ii,1:length(p)) = p;
+        degree_bin_AudMem(ii,:)=degrees_und(M3>0);
+        %disp(ii)
+        %showing progressive subject ID
+    end
+    
+    % combining both pvals
+    rich_club_pval = cat(1, rich_club_pval_TempSeq,rich_club_pval_AudMem);
+    rich_club_norm = cat(1, rich_club_norm_TempSeq,rich_club_norm_AudMem);
+    
+
+    %combining for future analysis
+    deg_bin_all = [degree_bin_TempSeq ; degree_bin_AudMem];
+    Raw_streams_all = cat(3,Raw_streams_norm_Dt1,Raw_streams_norm_Dt2);
+    Clust_streams_all = cat(3,Cluster_streams_norm_Dt1,Cluster_streams_norm_Dt2);
+    
+    
+    rich_club_sig = rich_club_pval<0.05&rich_club_pval>0;
+    %{
+    figure
+    rich_club_norm(find(isinf(rich_club_norm))) = 0;
+    plot((rich_club_norm.'))
+    hold on
+    plot(mean(rich_club_sig(Y_sel_tot,:),1),'LineWidth',4)
+    hold off
+    %}
+    a = find(mean(rich_club_sig(Y_sel_tot,:),1)>0.7);
+    
+    if length(a) > 0
+        tresh_num = RC_TreshVals(perc);
+        RC_threshold = a(tresh_num);
+        %RC_threshold = 35;
+        avg_degree_bin = mean(deg_bin_all,1);
+        rich_club_member = avg_degree_bin>=RC_threshold;
+        periphery_member = avg_degree_bin<RC_threshold;
+        UppTri = triu(true(90),1);
+        
+        RR_con_mask = rich_club_member&rich_club_member.'& UppTri;
+        PP_con_mask = ~rich_club_member&~rich_club_member.'& UppTri;
+        RP_con_mask = xor(rich_club_member,rich_club_member.')& UppTri;
+        npart = size(Raw_streams_all,3);
+        clust_dependency = zeros(3,npart);
+        for ii = 1:npart %over subjects
+            Mraw = Raw_streams_all(:,:,ii);
+            M3= Clust_streams_all(:,:,ii);
+            clust_dependency(1,ii) = sum(M3(RR_con_mask))/sum(Mraw(RR_con_mask));
+            clust_dependency(2,ii) = sum(M3(PP_con_mask))/sum(Mraw(PP_con_mask));
+            clust_dependency(3,ii) = sum(M3(RP_con_mask))/sum(Mraw(RP_con_mask));
+        end
+        save([outdir 'RC_ClustDep_dens_' num2str(Density_thresh) '.mat'], 'clust_dependency')
+        disp('SAVING')
+        %{
+        [~,p,~,stats] = ttest(clust_dependency(1,:),clust_dependency(2,:));
+        RC_origpval(1,perc,1) = p;
+        RC_origpval(1,perc,2) = stats.tstat;
+        [~,p,~,stats] = ttest(clust_dependency(1,:),clust_dependency(3,:));
+        RC_origpval(2,perc,1) = p;
+        RC_origpval(2,perc,2) = stats.tstat;
+        [~,p,~,stats] = ttest(clust_dependency(2,:),clust_dependency(3,:));
+        RC_origpval(3,perc,1) = p;
+        RC_origpval(3,perc,2) = stats.tstat;
+        %}
+    end
+    disp('Completed Density')
+    disp(Density_thresh)
+end
+%%
+tmp = load('/scratch7/MINDLAB2023_MEG-AuditMemDement/nikita/DTI/GraphTheory_Ageing_Cross/permuts_Rich_club/RC_Dat_comb.mat', 'RC_Dat_comb')
+RC_Dat_comb = tmp.RC_Dat_comb;
+degree_bin = RC_Dat_comb.degree_bin;
+Raw_streams_norm = RC_Dat_comb.Raw_streams_norm;
+Cluster_streams_norm = RC_Dat_comb.Cluster_streams_norm;
+npart = size(Raw_streams_norm,3);
+RC_origpval = zeros(3,2);
+%RC_threshold = a(15);
+RC_threshold = 35;
+avg_degree_bin = mean(degree_bin,1);
+rich_club_member = avg_degree_bin>=RC_threshold;
+periphery_member = avg_degree_bin<RC_threshold;
+UppTri = triu(true(90),1);
+
+RR_con_mask = rich_club_member&rich_club_member.'& UppTri;
+PP_con_mask = ~rich_club_member&~rich_club_member.'& UppTri;
+RP_con_mask = xor(rich_club_member,rich_club_member.')& UppTri;
+
+clust_dependency = zeros(3,npart);
+for ii = 1:npart %over subjects
+    Mraw = Raw_streams_norm(:,:,ii);
+    M3= Cluster_streams_norm(:,:,ii);
+    clust_dependency(1,ii) = sum(M3(RR_con_mask))/sum(Mraw(RR_con_mask));
+    clust_dependency(2,ii) = sum(M3(PP_con_mask))/sum(Mraw(PP_con_mask));
+    clust_dependency(3,ii) = sum(M3(RP_con_mask))/sum(Mraw(RP_con_mask));
+end
+[~,p,~,stats] = ttest(clust_dependency(1,:),clust_dependency(2,:));
+RC_origpval(1,1) = p;
+RC_origpval(1,2) = stats.tstat;
+[~,p,~,stats] = ttest(clust_dependency(1,:),clust_dependency(3,:));
+RC_origpval(2,1) = p;
+RC_origpval(2,2) = stats.tstat;
+[~,p,~,stats] = ttest(clust_dependency(2,:),clust_dependency(3,:));
+RC_origpval(3,1) = p;
+RC_origpval(3,2) = stats.tstat;
+%%
+figure
+imagesc(RR_con_mask.*Edge_Mask)
+figure
+imagesc(PP_con_mask.*Edge_Mask)
+figure
+imagesc(RP_con_mask.*Edge_Mask)
+%%
+figure
+rich_club_norm(find(isinf(rich_club_norm))) = 0;
+plot((rich_club_norm.'))
+hold on
+plot(mean(rich_club_pval(Y_Selection1,:),1))
+hold off
+%imagesc(RP_con_mask)
+colorbar
+
+
