@@ -1,162 +1,318 @@
 function output = perm_les_func_streams(S)
-% PERM_LES_FUNC_STREAMS Generate multinomial streamline-lesion permutations.
-%   output = perm_les_func_streams(S)
+% PERM_LES_FUNC_STREAMS Generate mass-matched streamline permutations.
 %
-%   S.perc      Percentile of the edge-consistency distribution (not an index).
-%   S.nperm     Accepted permutations per participant.
-%   S.iteration Batch identifier used in output filenames.
+% Required fields:
+%   S.cache_file
+%   S.edge_mask_file
+%   S.outdir
+%   S.bct_dir
+%   S.perc
+%   S.nperm
+%   S.iteration
+%   S.seed
 %
-%   Uses the TempSeq paths specified below and loops over 78 participants.
-%   Other S fields, including path, Roi_sizes, outdir, subdir_raw,
-%   subdir_clust and partStart, are not read by this implementation.
-%   Matrices are symmetrised and reordered to 90 AAL regions. Edge selection
-%   uses the coefficient of variation of waytotal-normalised connectivity.
-%   Streamline counts are max(round(weight)-1,0). The multinomial draw uses
-%   floor(cluster weight) removals; draws with negative residuals are rejected.
-%
-%   Saves one this_part_struct per participant and batch: efficiency
-%   (S.nperm-by-1), clustering_coef and degree_les (90-by-S.nperm).
-%   degree_les contains node strength, the sum of remaining edge weights.
-%   Output is 1 on success or -1 on a caught error. Requires Brain Connectivity
-%   Toolbox and mnrnd. Replace /path/to roots before execution.
+% Optional:
+%   S.partStart
 
 try
-    % Initialise the random-number generator from the current clock.
-    rng(sum(100*clock));
 
-    my_prctile = S.perc;
-    order = [1:2:90 90:-2:2];
-    Cluster_dir = '/path/to/tempseq_dti/Graph_Theory_Age_Diff/ThroughClust';
-    Cluster_dir = dir(Cluster_dir);
+    %% BCT
 
-    No_Cluster_dir = '/path/to/tempseq_dti/Graph_Theory_Age_Diff/NoCluster';
-    No_Cluster_dir = dir(No_Cluster_dir);
+    bct_paths = strsplit(genpath(S.bct_dir),pathsep);
 
-    path = dir('/path/to/tempseq_dti/00*'); % path to subjects
-    % Allocate ROI-by-ROI-by-participant connectivity arrays.
-    Thresholding_Mat = zeros(90,90,78);
-    Raw_streams = zeros(90,90,78);
-    Prop_Mats = zeros(90,90,78);
-    Cluster_streams = zeros(90,90,78);
-    order = [1:2:90 90:-2:2];
-    for ii = 1:length(Cluster_dir)-2
-        subj = ii+2;
-        subj_num = Cluster_dir(subj).name;
-        % Parse the subject number used to index the subject directory listing.
-        subj_num = str2double(subj_num(6:9));
-        M = readtable([path(subj_num).folder '/' path(subj_num).name '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/fdt_network_matrix']);
-        M = table2array(M);
-        M = M(1:90,1:90);
-        % Average reciprocal raw connections before reordering the AAL regions.
-        M_raw = (M+M.')/2;
-        M_raw = M_raw(order,order);
+    for jj = 1:length(bct_paths)
 
-        Raw_streams(:,:,ii) = M_raw;
+        if isempty(bct_paths{jj})
+            continue
+        end
 
-        M_Clust = readtable([path(subj_num).folder '/' path(subj_num).name '/Tractography_AgeDiff_005/AAL_Clust/Age_ttest/AAL90_5000stream/fdt_network_matrix']);
-        M_Clust = table2array(M_Clust);
-        M_Clust = M_Clust(1:90,1:90);
-        M_Clust = (M_Clust+M_Clust.')/2;
-        M_Clust = M_Clust (order,order);
-        Cluster_streams(:,:,ii) = M_Clust;
-        a = readtable([path(subj_num).folder '/' path(subj_num).name '/Tractography_AgeDiff/NoCluster/Age_ttest/AAL90_5000stream/waytotal']);
-        a = table2array(a);
-        a = a(1:90,1);
-        % Normalise each seed row by its waytotal before symmetrising.
-        M = M./a;
-        M = (M+M.')/2;
-        Thresholding_Mat(:,:,ii) = M;
+        if exist(fullfile(bct_paths{jj},'efficiency_wei.m'),'file') || ...
+           exist(fullfile(bct_paths{jj},'clustering_coef_wu.m'),'file')
+            addpath(bct_paths{jj});
+        end
     end
 
-    Density_thresh = my_prctile;
-
-    % Select consistent edges using between-participant SD divided by mean.
-    sd_mat = std(Thresholding_Mat,0,3);
-    mean_mat = mean(Thresholding_Mat,3);
-    Consistecy_mat = sd_mat./mean_mat;
-
-    Edge_Mask = Consistecy_mat < prctile(Consistecy_mat(:),Density_thresh);
-    Edge_Mask = Edge_Mask(order,order);
-    % Restrict sampling to the upper triangle, including any selected diagonal entries.
-    Edge_Mask_tri = Edge_Mask&~tril(true(size(Edge_Mask)),-1);
-    My_edge_ind = find(Edge_Mask_tri);
-
-    % Sum cluster-constrained weights across selected upper-triangle edges.
-    clust_sums = zeros(78,1);
-    for ii = 1:length(Cluster_dir)-2
-        a = Cluster_streams(:,:,ii);
-        clust_sums(ii,1) = sum(a(Edge_Mask_tri));
+    if isempty(which('efficiency_wei'))
+        error('BCT function efficiency_wei not found.');
     end
 
-    outdir = ['/path/to/tempseq_dti/Graph_Theory_Age_Diff/permuts_Lesion_streamlines_005/density_' num2str(my_prctile)]
+    if isempty(which('clustering_coef_wu'))
+        error('BCT function clustering_coef_wu not found.');
+    end
+
+    %% Settings
+
+    density = S.perc;
+    nperm = S.nperm;
+    iteration = S.iteration;
+
+    if isfield(S,'partStart')
+        partStart = S.partStart;
+    else
+        partStart = 1;
+    end
+
+    %% Load input data
+
+    tmp = load(S.cache_file,'cache');
+    cache = tmp.cache;
+
+    Raw_streams = cache.Raw_streams;
+    Cluster_streams = cache.Cluster_streams;
+    ROI_sizes = cache.ROI_sizes;
+    subjects = cache.subjects;
+    healthy_selection = logical(cache.healthy_selection(:));
+
+    npart = size(Raw_streams,3);
+
+    if size(Cluster_streams,3) ~= npart
+        error('Raw and cluster matrices have different participant counts.');
+    end
+
+    if size(ROI_sizes,2) ~= npart
+        error('ROI sizes do not match connectivity participant count.');
+    end
+
+    if length(subjects) ~= npart
+        error('Subject list does not match connectivity participant count.');
+    end
+
+    if length(healthy_selection) ~= npart
+        error('Healthy selection does not match participant count.');
+    end
+
+    participant_ind = find(healthy_selection);
+    participant_ind = participant_ind(participant_ind >= partStart);
+
+    if isempty(participant_ind)
+        error('No healthy participants selected.');
+    end
+
+    %% Edge mask
+
+    mask_data = load( ...
+        S.edge_mask_file, ...
+        'edge_masks', ...
+        'dens_range');
+
+    density_ind = find(mask_data.dens_range == density,1);
+
+    if isempty(density_ind)
+        error('Density %g not found in edge-mask file.',density);
+    end
+
+    Edge_Mask = logical(mask_data.edge_masks(:,:,density_ind));
+
+    if ~isequal(size(Edge_Mask),[90 90])
+        error('Edge mask must be 90 x 90.');
+    end
+
+    if ~isequal(Edge_Mask,Edge_Mask.')
+        error('Edge mask is not symmetric.');
+    end
+
+    Edge_Mask_tri = triu(Edge_Mask,1);
+    edge_ind = find(Edge_Mask_tri);
+
+    %% Lesion mass
+
+    clust_sums = zeros(npart,1);
+
+    for ii = participant_ind'
+
+        cluster_units = round(2 * Cluster_streams(:,:,ii));
+        clust_sums(ii) = sum(cluster_units(edge_ind));
+
+    end
+
+    %% Output directory
+
+    outdir = fullfile( ...
+        S.outdir, ...
+        'Streamline_Permuts', ...
+        ['density_' num2str(density)]);
+
     if ~exist(outdir,'dir')
         mkdir(outdir);
     end
 
-    tmp = load('/path/to/tempseq_dti/Graph_Theory_Age_Diff/ROI_sizes.mat')
-    ROI_sizes = tmp.ROI_sizes;
-    this_iteration = S.iteration;
+    %% Permutations
 
-    nperm = S.nperm;
-    % Generate and save a separate permutation batch for each participant.
-    for participant = 1:78
+    for hh = 1:length(participant_ind)
+
+        participant = participant_ind(hh);
+
+        participant_seed = ...
+            S.seed + ...
+            1000000 * iteration + ...
+            1000 * density + ...
+            participant;
+
+        stream = RandStream('mt19937ar','Seed',participant_seed);
+        RandStream.setGlobalStream(stream);
+
         efficiency = zeros(nperm,1);
         clustering_coef = zeros(90,nperm);
         degree_les = zeros(90,nperm);
+
         Roi_subj = ROI_sizes(:,participant);
-        % Form pairwise sums of ROI sizes for edge-weight normalisation.
-        Roi_subj = Roi_subj+Roi_subj.';
-        Roi_subj(~Edge_Mask_tri) = 0;
+        Roi_pair = Roi_subj + Roi_subj.';
+
         this_raw_mat = Raw_streams(:,:,participant);
-        this_raw_mat(~Edge_Mask_tri) = 0;
-        % Convert symmetrised weights to the integer counts used by the sampler.
-        raw_mat_counter = max(round(this_raw_mat)-1,0);
-        total_streams = sum(raw_mat_counter(Edge_Mask_tri));
-        % Use the floored cluster-weight sum as the multinomial removal count.
-        this_lesion = floor(clust_sums(participant,1));
 
-        raw_vals = raw_mat_counter(My_edge_ind);
-        Multinonm_prob = raw_vals/total_streams;
-        Multinonm_prob = Multinonm_prob/sum(Multinonm_prob);
-        Multinonm_prob = Multinonm_prob';
-        permuting = 1;
-        perm = 1;
-        % Accept draws until S.nperm nonnegative residual networks are obtained.
-        while permuting == 1
-            % Draw removal counts with probabilities proportional to integer edge counts.
-            this_les = mnrnd(this_lesion,Multinonm_prob);
-            this_les = raw_vals - this_les';
-            if any(this_les<0), continue; end
-            Lesion_perm = this_raw_mat;
-            Lesion_perm(My_edge_ind) = this_les;
+        raw_units = round(2 * this_raw_mat);
+        raw_units(~Edge_Mask_tri) = 0;
 
-            % Normalise residual counts by pairwise ROI sizes.
-            Lesion_perm = Lesion_perm./Roi_subj;
-            % Mirror the upper triangle to restore a symmetric connectivity matrix.
-            Lesion_perm = triu(Lesion_perm)+triu(Lesion_perm,1)';
-            Lesion_perm(find(isnan(Lesion_perm))) = 0;
-            efficiency(perm,1) = efficiency_wei(Lesion_perm);
-            clustering_coef(:,perm) = clustering_coef_wu(Lesion_perm);
-            degree_les(:,perm) = sum(Lesion_perm,2);
-            perm = perm+1;
-            if perm == nperm+1
-                permuting = 0;
-            end
+        raw_vals = raw_units(edge_ind);
+
+        total_streams = sum(raw_vals);
+        this_lesion = clust_sums(participant);
+
+        if total_streams == 0
+            error( ...
+                'Participant %d has no eligible connectivity.', ...
+                participant);
         end
-        % Collect the permutation summaries for this participant.
-        this_part_struct = [];
+
+        if this_lesion > total_streams
+            error( ...
+                ['Participant %d: lesion mass exceeds available ' ...
+                 'connectivity.'], ...
+                participant);
+        end
+
+        Multinom_prob = raw_vals / total_streams;
+        Multinom_prob = Multinom_prob / sum(Multinom_prob);
+        Multinom_prob = Multinom_prob';
+
+        %% Bookkeeping
+
+        bookkeeping = struct();
+
+        bookkeeping.participant_index = participant;
+        bookkeeping.subject = subjects{participant};
+        bookkeeping.density = density;
+        bookkeeping.iteration = iteration;
+        bookkeeping.seed = participant_seed;
+
+        bookkeeping.nperm = nperm;
+        bookkeeping.n_eligible_edges = length(edge_ind);
+
+        bookkeeping.total_raw_units = total_streams;
+        bookkeeping.observed_lesion_units = this_lesion;
+        bookkeeping.lesion_fraction = ...
+            this_lesion / total_streams;
+
+        this_cluster_units = ...
+            round(2 * Cluster_streams(:,:,participant));
+
+        bookkeeping.observed_affected_edges = ...
+            nnz(this_cluster_units(edge_ind) > 0);
+
+        bookkeeping.attempted_draws = 0;
+        bookkeeping.rejected_draws = 0;
+
+        %% Generate permutations
+
+        perm = 1;
+
+        while perm <= nperm
+
+            bookkeeping.attempted_draws = ...
+                bookkeeping.attempted_draws + 1;
+
+            removed_units = ...
+                mnrnd(this_lesion,Multinom_prob);
+
+            residual_units = ...
+                raw_vals - removed_units';
+
+            if any(residual_units < 0)
+
+                bookkeeping.rejected_draws = ...
+                    bookkeeping.rejected_draws + 1;
+
+                continue
+
+            end
+
+            residual_weights = residual_units / 2;
+
+            Lesion_perm = zeros(90,90);
+            Lesion_perm(edge_ind) = residual_weights;
+
+            Lesion_perm(edge_ind) = ...
+                Lesion_perm(edge_ind) ./ ...
+                Roi_pair(edge_ind);
+
+            Lesion_perm = ...
+                Lesion_perm + Lesion_perm.';
+
+            efficiency(perm) = ...
+                efficiency_wei(Lesion_perm);
+
+            clustering_coef(:,perm) = ...
+                clustering_coef_wu(Lesion_perm);
+
+            degree_les(:,perm) = ...
+                sum(Lesion_perm,2);
+
+            perm = perm + 1;
+
+        end
+
+        %% Finalise bookkeeping
+
+        bookkeeping.accepted_draws = nperm;
+
+        bookkeeping.rejection_rate = ...
+            bookkeeping.rejected_draws / ...
+            bookkeeping.attempted_draws;
+
+        %% Save
+
+        this_part_struct = struct();
+
         this_part_struct.efficiency = efficiency;
         this_part_struct.clustering_coef = clustering_coef;
         this_part_struct.degree_les = degree_les;
-        filename = fullfile(outdir,['permut_les_mat' num2str(participant) '_iter_' num2str(this_iteration) '.mat']);
+        this_part_struct.bookkeeping = bookkeeping;
+
+        filename = fullfile( ...
+            outdir, ...
+            ['permut_les_mat' num2str(participant) ...
+             '_iter_' num2str(iteration) '.mat']);
+
         save(filename,'this_part_struct');
+
+        fprintf( ...
+            ['%d/%d | participant %d | %s | density %g | ' ...
+             'iteration %d | rejected %d/%d\n'], ...
+            hh, ...
+            length(participant_ind), ...
+            participant, ...
+            subjects{participant}, ...
+            density, ...
+            iteration, ...
+            bookkeeping.rejected_draws, ...
+            bookkeeping.attempted_draws);
+
     end
 
     output = 1;
-% Report a caught error and return the failure status.
+
 catch ME
-    fprintf('ERROR in Perm_function_ANOVA_continious: %s/m',ME.message);
+
+    fprintf(2,'ERROR in perm_les_func_streams: %s\n',ME.message);
+
+    for ii = 1:length(ME.stack)
+        fprintf(2,'  %s, line %d\n', ...
+            ME.stack(ii).name, ...
+            ME.stack(ii).line);
+    end
+
     output = -1;
+
 end
 
 end
